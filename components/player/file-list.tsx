@@ -13,13 +13,18 @@ export function FileList({ player }: FileListProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      player.addFiles(Array.from(e.target.files))
+    const fileList = e.target.files
+    if (!fileList || fileList.length === 0) return
+
+    // Capture files via indexed access (more reliable than Array.from on iOS Safari)
+    const selectedFiles: File[] = []
+    for (let i = 0; i < fileList.length; i++) {
+      selectedFiles.push(fileList[i])
     }
-    // Reset value so the same file can be selected again
-    if (e.target) {
-      e.target.value = ''
-    }
+
+    e.target.value = ''
+
+    player.addFiles(selectedFiles)
   }
 
   const handleBrowseClick = () => {
@@ -27,7 +32,7 @@ export function FileList({ player }: FileListProps) {
   }
 
   return (
-    <div className="flex flex-col h-full bg-card border-r w-full md:w-80 ">
+    <div className="flex flex-col flex-1 min-h-0 md:flex-none md:h-full bg-card border-r w-full md:w-80">
       <div className="p-4 border-b flex justify-between items-center">
         <h2 className="text-lg font-semibold flex items-center gap-2">
           <Music className="w-5 h-5" />
@@ -45,7 +50,6 @@ export function FileList({ player }: FileListProps) {
 
       <input
         type="file"
-        multiple
         accept="audio/*, .mp3, .wav, .ogg, .flac, .m4a, .aac, .wma, .alac, .aiff"
         className="hidden"
         ref={fileInputRef}

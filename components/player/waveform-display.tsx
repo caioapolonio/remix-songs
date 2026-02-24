@@ -6,10 +6,10 @@ interface WaveformDisplayProps {
 
 export function WaveformDisplay({ player }: WaveformDisplayProps) {
   return (
-    <div className="w-full flex-1 flex flex-col justify-center relative p-8 bg-black/5 rounded-lg border shadow-inner">
-      <div 
-        ref={player.containerRef} 
-        className="w-full h-32" 
+    <div className="w-full md:flex-1 flex flex-col justify-center relative p-4 md:p-8 bg-black/5 rounded-lg border shadow-inner">
+      <div
+        ref={player.containerRef}
+        className="w-full h-32"
       />
       
       {!player.currentFileId && (

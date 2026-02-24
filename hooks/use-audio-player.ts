@@ -27,10 +27,12 @@ export function useAudioPlayer() {
   const containerRef = useRef<HTMLDivElement>(null);
   const wavesurferRef = useRef<WaveSurfer | null>(null);
   const reverbRef = useRef<Tone.Reverb | null>(null);
-  const sourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
+  // Using Tone.Player instead of MediaElementAudioSourceNode
+  const playerRef = useRef<Tone.Player | null>(null); 
 
   const [files, setFiles] = useState<AudioFile[]>([]);
   const [currentFileId, setCurrentFileId] = useState<string | null>(null);
+  const [isReady, setIsReady] = useState(false);
   
   const [state, setState] = useState<AudioPlayerState>({
     isPlaying: false,
@@ -53,20 +55,75 @@ export function useAudioPlayer() {
   const currentFileIdRef = useRef(currentFileId);
   useEffect(() => { currentFileIdRef.current = currentFileId; }, [currentFileId]);
 
-  // Actions
-  const playFile = useCallback((id: string) => {
-    const fileObj = filesRef.current.find(f => f.id === id);
-    if (!fileObj || !wavesurferRef.current) return;
+  // --- Initialization ---
+  
+  // Track initialization state
+  const isInitializedRef = useRef(false);
+  const initializationPromiseRef = useRef<Promise<void> | null>(null);
 
-    setCurrentFileId(id);
-    wavesurferRef.current.load(fileObj.url);
+  // Store handleTrackEnd in a ref to avoid circular dependency in initialization
+  // We need this because initializeAudio is called before handleTrackEnd is defined in the component body flow if we are not careful,
+  // but actually useCallback handles hoisting fine. However, to be safe and clean:
+  const handleTrackEndRef = useRef<() => void>(null);
+
+  // Track seeking state
+  const isSeekingRef = useRef(false);
+
+  // Generation counter to abort stale concurrent playFile calls
+  const loadGenRef = useRef(0);
+
+  // Function to initialize Tone.js Effects Chain
+  const initializeAudio = useCallback(async () => {
+    if (isInitializedRef.current) return;
+    if (initializationPromiseRef.current) return initializationPromiseRef.current;
     
-    wavesurferRef.current.once('ready', () => {
-        wavesurferRef.current?.play();
-    });
+    initializationPromiseRef.current = (async () => {
+        // Reverb (Single instance reused)
+        const reverb = new Tone.Reverb({
+        decay: 4,
+        wet: 0,
+        }).toDestination();
+
+        // Non-blocking: iOS requires AudioContext to be unlocked in the user gesture call stack.
+        // Awaiting reverb.generate() here breaks that chain. Fire-and-forget instead.
+        reverb.generate().catch(e => console.warn("Reverb generation failed", e));
+
+        reverbRef.current = reverb;
+
+        // Player (Single instance reused)
+        const player = new Tone.Player().connect(reverb);
+        playerRef.current = player;
+        
+        // Apply current state values to the new player
+        player.playbackRate = stateRef.current.speed;
+        player.volume.value = stateRef.current.isMuted ? -Infinity : Tone.gainToDb(stateRef.current.volume);
+        
+        // Handle Track End Logic (attach listener)
+        player.onstop = () => {
+            // Only trigger track end if we are NOT manually seeking/pausing
+            // and we expect it to be playing
+            if (stateRef.current.isPlaying && !isSeekingRef.current) { 
+                handleTrackEndRef.current?.();
+            }
+        };
+
+        isInitializedRef.current = true;
+        initializationPromiseRef.current = null;
+    })();
+
+    return initializationPromiseRef.current;
+  }, []); 
+  
+  // Clean up on unmount
+  useEffect(() => {
+    return () => {
+      playerRef.current?.dispose();
+      reverbRef.current?.dispose();
+      isInitializedRef.current = false;
+    };
   }, []);
 
-  // Initialize WaveSurfer
+  // Initialize WaveSurfer (Visualizer Only)
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -79,32 +136,235 @@ export function useAudioPlayer() {
       barGap: 2,
       height: 128,
       normalize: true,
-      backend: 'MediaElement',
+      interact: true, // Enable seeking
+      autoCenter: true,
+      volume: 0, // Mute at construction to prevent audio leak before setVolume(0)
     });
 
     wavesurferRef.current = ws;
 
-    ws.on('ready', () => {
-      setState(prev => ({ ...prev, duration: ws.getDuration() }));
-      setupAudioChain(ws);
+    // Handle user seeking on WaveSurfer
+    let seekingTimeout: NodeJS.Timeout;
+
+    ws.on('interaction', (newTime) => {
+        const player = playerRef.current;
+        if (!player || !player.loaded) return;
+
+        // Set seeking flag to prevent onstop from triggering track end logic
+        isSeekingRef.current = true;
+        
+        // Clear any existing timeout to keep flag active during rapid interactions
+        clearTimeout(seekingTimeout);
+
+        // Commit time state before seeking
+        timeRef.current.pausedAt = newTime;
+        timeRef.current.startedAt = Date.now();
+
+        if (player.state === 'started') {
+            player.stop();
+            player.start(undefined, newTime); 
+            setState(prev => ({ ...prev, currentTime: newTime }));
+        } else {
+            setState(prev => ({ ...prev, currentTime: newTime }));
+        }
+        
+        // Reset seeking flag after a short delay to allow onstop to fire safely
+        seekingTimeout = setTimeout(() => {
+            isSeekingRef.current = false;
+        }, 200); // Increased safety margin
     });
 
-    ws.on('audioprocess', (time) => {
-      setState(prev => ({ ...prev, currentTime: time }));
-    });
+    return () => {
+      ws.destroy();
+    };
+  }, []);
 
-    ws.on('play', () => setState(prev => ({ ...prev, isPlaying: true })));
-    ws.on('pause', () => setState(prev => ({ ...prev, isPlaying: false })));
+  // Time tracking ref for synchronization
+  const timeRef = useRef({
+    startedAt: 0,
+    pausedAt: 0,
+    speed: 1,
+  });
+
+  // --- Playback Logic ---
+
+  const playFile = useCallback(async (id: string) => {
+    const gen = ++loadGenRef.current;
+
+    // iOS: unlock AudioContext as the very first operation in a user gesture handler.
+    // Any await before this risks losing the gesture context on iOS/WKWebView.
+    if (Tone.context.state !== 'running') {
+      try { await Tone.start(); } catch (e) {}
+    }
+    if (gen !== loadGenRef.current) return;
+
+    // Ensure Audio is initialized
+    await initializeAudio();
+    if (gen !== loadGenRef.current) return;
+
+    const fileObj = filesRef.current.find(f => f.id === id);
+    if (!fileObj || !wavesurferRef.current || !playerRef.current) return;
+
+    const player = playerRef.current;
+
+    // Stop current
+    if (player.state === 'started') {
+      player.stop();
+    }
+
+    setCurrentFileId(id);
+    setIsReady(false);
+
+    // Reset time tracking
+    timeRef.current = { startedAt: 0, pausedAt: 0, speed: stateRef.current.speed };
+
+    setState(prev => ({ ...prev, isPlaying: false, currentTime: 0, duration: 0 }));
+
+    try {
+        // Load into Tone.Player (Decodes audio - Critical for mobile stability)
+        await player.load(fileObj.url);
+        if (gen !== loadGenRef.current) return;
+
+        // Sync WaveSurfer (Visualizer)
+        await wavesurferRef.current.load(fileObj.url);
+        wavesurferRef.current.setVolume(0); // Mute WaveSurfer to avoid double audio
+        if (gen !== loadGenRef.current) return;
+
+        // Update state
+        setState(prev => ({ ...prev, duration: player.buffer.duration }));
+        setIsReady(true);
+
+        player.start();
+        timeRef.current.startedAt = Date.now(); // Track start time
+        setState(prev => ({ ...prev, isPlaying: true }));
+
+        // Reset playback rate/volume/reverb to current state values
+        player.playbackRate = stateRef.current.speed;
+        player.volume.value = stateRef.current.isMuted ? -Infinity : Tone.gainToDb(stateRef.current.volume);
+        if (reverbRef.current) reverbRef.current.wet.value = stateRef.current.reverb;
+
+    } catch (e) {
+        console.error("Error loading file", e);
+    }
+  }, []);
+
+  // --- Sync Loop (Update UI with Player progress) ---
+  useEffect(() => {
+    let animationId: number;
     
-    ws.on('finish', () => {
+    const loop = () => {
+      const player = playerRef.current;
+      const ws = wavesurferRef.current;
+      const { isPlaying, duration } = stateRef.current;
+      
+      if (player && isPlaying && ws) {
+        // Calculate current time based on system clock and speed
+        const now = Date.now();
+        const elapsed = (now - timeRef.current.startedAt) / 1000;
+        const playedTime = timeRef.current.pausedAt + (elapsed * timeRef.current.speed);
+        
+        if (playedTime < duration) {
+            // Update Visuals
+            ws.setTime(playedTime);
+            setState(prev => ({ ...prev, currentTime: playedTime }));
+        } else {
+            // End of track handling in onstop callback, but visual clamp here
+            ws.setTime(duration);
+        }
+      }
+      animationId = requestAnimationFrame(loop);
+    };
+    loop();
+    
+    return () => cancelAnimationFrame(animationId);
+  }, []);
+
+  // --- Watchers for Controls ---
+
+  // Speed
+  useEffect(() => {
+    if (playerRef.current) {
+        // When changing speed, we need to "commit" the current time to pausedAt
+        // and reset startedAt, otherwise the math breaks (it would apply new speed to entire duration)
+        
+        if (state.isPlaying) {
+            const now = Date.now();
+            const elapsed = (now - timeRef.current.startedAt) / 1000;
+            timeRef.current.pausedAt += elapsed * timeRef.current.speed; // Commit time with OLD speed
+            timeRef.current.startedAt = now; // Reset start time
+        }
+        
+        timeRef.current.speed = state.speed;
+        playerRef.current.playbackRate = state.speed;
+    }
+  }, [state.speed, state.isPlaying]); // Added isPlaying dependency to ensure logic holds
+
+  // Reverb
+  useEffect(() => {
+    if (reverbRef.current) {
+        reverbRef.current.wet.value = state.reverb;
+    }
+  }, [state.reverb]);
+
+  // Volume / Mute
+  useEffect(() => {
+    if (playerRef.current) {
+        const val = state.isMuted ? 0 : state.volume;
+        playerRef.current.volume.value = Tone.gainToDb(val);
+    }
+  }, [state.volume, state.isMuted]);
+
+  // Loop Mode Handling (Manual)
+  useEffect(() => {
+    // Tone.Player has .loop property
+    if (playerRef.current) {
+        // 'one' means loop this track. 'all' means playlist logic handled in onstop.
+        playerRef.current.loop = state.loopMode === 'one';
+    }
+  }, [state.loopMode]);
+  
+  // Handle Track End (Playlist)
+  useEffect(() => {
+      // Tone.Player onstop fires when stopped manually OR ended.
+      // We need to differentiate. 
+      // Actually Tone.Player.onstop is the way.
+      if (!playerRef.current) return;
+      
+      playerRef.current.onstop = () => {
+          // If we are still "playing" in state but player stopped, it means track ended naturally
+          // (unless we stopped it manually in playFile, which updates state)
+          
+          // This is tricky because playFile calls stop().
+          // Let's assume onstop logic:
+          const { isPlaying, loopMode } = stateRef.current;
+          
+          // If we manually stopped (isPlaying became false), do nothing.
+          // Wait, playFile sets isPlaying=false momentarily.
+          
+          // Let's rely on checking if we reached duration? No.
+          
+          // Simple playlist logic:
+          if (stateRef.current.isPlaying) { 
+              // It stopped while we thought it should be playing -> Track Ended
+              handleTrackEnd();
+          }
+      };
+  }, []);
+  
+  const handleTrackEnd = useCallback(() => {
       const { loopMode } = stateRef.current;
       const currentId = currentFileIdRef.current;
       const fileList = filesRef.current;
       
+      // Reset time for next track or loop
+      timeRef.current = { startedAt: 0, pausedAt: 0, speed: stateRef.current.speed };
+      
       if (!currentId) return;
 
       if (loopMode === 'one') {
-        ws.play();
+          // Handled by player.loop = true, but if it wasn't:
+          playerRef.current?.start();
+          timeRef.current.startedAt = Date.now();
       } else if (loopMode === 'all') {
         const currentIndex = fileList.findIndex(f => f.id === currentId);
         const nextIndex = (currentIndex + 1) % fileList.length;
@@ -117,73 +377,17 @@ export function useAudioPlayer() {
             setState(prev => ({ ...prev, isPlaying: false }));
         }
       }
-    });
-
-    return () => {
-      ws.destroy();
-      reverbRef.current?.dispose();
-      // sourceNodeRef.current is managed by Tone context usually, but we can disconnect
-      try { sourceNodeRef.current?.disconnect(); } catch {}
-    };
   }, [playFile]);
 
-  // Setup Audio Chain
-  const setupAudioChain = async (ws: WaveSurfer) => {
-    if (sourceNodeRef.current) return;
-
-    try {
-      const mediaElement = ws.getMediaElement();
-      if (!mediaElement) return;
-
-      // Start Tone context
-      if (Tone.context.state !== 'running') {
-        // We can't always await this if not in user gesture, but play() will trigger it
-        await Tone.start(); 
-      }
-      
-      // Create Reverb
-      const reverb = new Tone.Reverb({
-        decay: 4,
-        wet: 0,
-      }).toDestination();
-      reverbRef.current = reverb;
-
-      // Create Source
-      const source = Tone.context.createMediaElementSource(mediaElement);
-      sourceNodeRef.current = source;
-      
-      // Connect Native Source -> Tone Reverb
-      Tone.connect(source, reverb);
-      
-    } catch (error) {
-      console.error("Error setting up audio chain:", error);
-    }
-  };
-
-  // Watchers
+  // Update handleTrackEndRef
   useEffect(() => {
-    if (!wavesurferRef.current) return;
-    try {
-        wavesurferRef.current.setPlaybackRate(state.speed, false); 
-    } catch (e) {
-        console.error("Error setting playback rate", e);
-    }
-  }, [state.speed]);
-
-  useEffect(() => {
-    if (reverbRef.current) {
-        reverbRef.current.wet.value = state.reverb;
-    }
-  }, [state.reverb]);
-
-  useEffect(() => {
-    if (wavesurferRef.current) {
-        wavesurferRef.current.setVolume(state.isMuted ? 0 : state.volume);
-    }
-  }, [state.volume, state.isMuted]);
+    handleTrackEndRef.current = handleTrackEnd;
+  }, [handleTrackEnd]);
 
   // --- Public API ---
-  const addFiles = useCallback((newFiles: File[]) => {
+  const addFiles = useCallback(async (newFiles: File[]) => {
+    // Process files synchronously first, before any await, so File objects are
+    // still alive and the UI updates immediately (critical on iOS).
     const audioFiles = newFiles.map(file => ({
       id: uuidv4(),
       file,
@@ -191,20 +395,64 @@ export function useAudioPlayer() {
       url: URL.createObjectURL(file),
     }));
 
+    // Optimistically update ref so playFile can work immediately if called
+    filesRef.current = [...filesRef.current, ...audioFiles];
+
+    // Update UI IMMEDIATELY (no await before this)
     setFiles(prev => [...prev, ...audioFiles]);
 
+    // iOS: unlock AudioContext on file selection gesture.
+    // This runs after UI update so the file list is visible even if Tone.start() is slow.
+    if (Tone.context.state !== 'running') {
+      try { await Tone.start(); } catch (e) {}
+    }
+
+    // Initialize Audio (Async, might take time)
+    // We do this AFTER UI update so the user sees the file in the list
+    try {
+        await initializeAudio();
+    } catch (e) {
+        console.error("Failed to initialize audio", e);
+    }
+
+    // Auto-play first file if nothing is playing
+    // Note: This relies on filesRef being updated
     if (!currentFileIdRef.current && audioFiles.length > 0) {
       playFile(audioFiles[0].id);
     }
-  }, [playFile]);
+  }, [playFile, initializeAudio]);
 
   const togglePlay = useCallback(async () => {
-    if (!wavesurferRef.current) return;
+    // iOS: unlock AudioContext as the very first operation in a user gesture handler.
     if (Tone.context.state !== 'running') {
-        await Tone.context.resume();
+      try { await Tone.start(); } catch (e) {}
     }
-    wavesurferRef.current.playPause();
-  }, []);
+
+    // Ensure Audio is initialized on user interaction
+    if (!isInitializedRef.current) {
+        await initializeAudio();
+    }
+
+    if (!playerRef.current || !isReady) return;
+
+    if (playerRef.current.state === 'started') {
+        // Pause Logic
+        const now = Date.now();
+        const elapsed = (now - timeRef.current.startedAt) / 1000;
+        timeRef.current.pausedAt += elapsed * timeRef.current.speed;
+        
+        playerRef.current.stop();
+        setState(prev => ({ ...prev, isPlaying: false }));
+    } else {
+        // Play Logic (Resume)
+        const offset = timeRef.current.pausedAt;
+        playerRef.current.start(undefined, offset);
+        
+        timeRef.current.startedAt = Date.now();
+        setState(prev => ({ ...prev, isPlaying: true }));
+    }
+  }, [isReady, initializeAudio]);
+
 
   const playNext = useCallback(() => {
     const currentIndex = filesRef.current.findIndex(f => f.id === currentFileIdRef.current);
@@ -232,8 +480,9 @@ export function useAudioPlayer() {
   const removeFile = (id: string) => {
       setFiles(prev => prev.filter(f => f.id !== id));
       if (currentFileId === id) {
-          wavesurferRef.current?.stop();
+          playerRef.current?.stop();
           setCurrentFileId(null);
+          setState(prev => ({ ...prev, isPlaying: false, currentTime: 0, duration: 0 }));
       }
   };
 

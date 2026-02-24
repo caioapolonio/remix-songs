@@ -21,15 +21,16 @@ interface ControlsProps {
 }
 
 export function Controls({ player }: ControlsProps) {
-  const { 
-    state, 
-    togglePlay, 
-    playNext, 
-    playPrev, 
-    toggleMute, 
-    setVolume, 
+  const {
+    state,
+    togglePlay,
+    playNext,
+    playPrev,
+    toggleMute,
+    setVolume,
     cycleLoopMode,
     currentFileId,
+    files,
     setSpeed,
     setReverb
   } = player;
@@ -99,11 +100,11 @@ export function Controls({ player }: ControlsProps) {
       {/* Playback Controls (Middle on Mobile, Left on Desktop) */}
       <div className="relative flex items-center gap-4 flex-1 justify-center md:justify-start w-full md:w-auto py-4 md:py-0 px-6">
         <div className="flex items-center gap-4 md:gap-2">
-            <Button 
-                variant="ghost" 
-                size="icon" 
+            <Button
+                variant="ghost"
+                size="icon"
                 onClick={playPrev}
-                disabled={!currentFileId}
+                disabled={!currentFileId || files.length <= 1}
                 className="hover:bg-accent/50"
             >
                 <SkipBack className="w-5 h-5" />
@@ -122,11 +123,11 @@ export function Controls({ player }: ControlsProps) {
                 )}
             </Button>
 
-            <Button 
-                variant="ghost" 
-                size="icon" 
+            <Button
+                variant="ghost"
+                size="icon"
                 onClick={playNext}
-                disabled={!currentFileId}
+                disabled={!currentFileId || files.length <= 1}
                 className="hover:bg-accent/50"
             >
                 <SkipForward className="w-5 h-5" />
