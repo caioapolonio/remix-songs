@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import WaveSurfer from 'wavesurfer.js';
 import * as Tone from 'tone';
+import { v4 as uuidv4 } from 'uuid';
 
 export type LoopMode = 'off' | 'all' | 'one';
 
@@ -184,7 +185,7 @@ export function useAudioPlayer() {
   // --- Public API ---
   const addFiles = useCallback((newFiles: File[]) => {
     const audioFiles = newFiles.map(file => ({
-      id: crypto.randomUUID(),
+      id: uuidv4(),
       file,
       name: file.name,
       url: URL.createObjectURL(file),

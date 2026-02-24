@@ -2,7 +2,7 @@ import { useRef } from 'react'
 import { useAudioPlayer } from '@/hooks/use-audio-player'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Button } from '@/components/ui/button'
-import { Music, Trash2 } from 'lucide-react'
+import { Music, Plus, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface FileListProps {
@@ -34,19 +34,19 @@ export function FileList({ player }: FileListProps) {
           Library
         </h2>
         <Button
-          size="sm"
-          variant="ghost"
+          size="icon"
+          variant="outline"
           onClick={handleBrowseClick}
           title="Add Files"
         >
-          +
+          <Plus className="w-1 h-1" />
         </Button>
       </div>
 
       <input
         type="file"
         multiple
-        accept="audio/*"
+        accept="audio/*, .mp3, .wav, .ogg, .flac, .m4a, .aac, .wma, .alac, .aiff"
         className="hidden"
         ref={fileInputRef}
         onChange={handleFileChange}
