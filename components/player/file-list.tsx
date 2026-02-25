@@ -1,8 +1,7 @@
 import { useRef } from 'react'
 import { useAudioPlayer } from '@/hooks/use-audio-player'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { Button } from '@/components/ui/button'
-import { Music, Plus, Trash2 } from 'lucide-react'
+import { Music, Plus, Trash2, Download, Loader2, ListX } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface FileListProps {
@@ -32,20 +31,46 @@ export function FileList({ player }: FileListProps) {
   }
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 md:flex-none md:h-full bg-card border-r w-full md:w-80">
+    <div className="flex flex-col flex-1 min-h-0 md:flex-none md:h-full bg-card border-r w-full md:w-1/3 max-w-2xl min-w-100">
       <div className="p-4 border-b flex justify-between items-center">
         <h2 className="text-lg font-semibold flex items-center gap-2">
           <Music className="w-5 h-5" />
           Library
         </h2>
-        <Button
-          size="icon"
-          variant="outline"
-          onClick={handleBrowseClick}
-          title="Add Files"
-        >
-          <Plus className="w-1 h-1" />
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            size="default"
+            variant="outline"
+            disabled={!player.currentFileId || player.state.isDownloading}
+            onClick={player.downloadWithEffects}
+            className="gap-1.5"
+          >
+            {player.state.isDownloading ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Download className="w-4 h-4" />
+            )}
+            {player.state.isDownloading ? 'Rendering...' : 'Download'}
+          </Button>
+          <Button
+            size="default"
+            variant="outline"
+            disabled={player.files.length === 0}
+            onClick={player.clearAll}
+            className="gap-1.5"
+          >
+            <ListX className="w-4 h-4" />
+            Clear
+          </Button>
+          <Button
+            size="icon"
+            variant="outline"
+            onClick={handleBrowseClick}
+            title="Add Files"
+          >
+            <Plus className="w-4 h-4" />
+          </Button>
+        </div>
       </div>
 
       <input

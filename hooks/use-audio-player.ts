@@ -5,6 +5,28 @@ import { v4 as uuidv4 } from 'uuid';
 
 export type LoopMode = 'off' | 'all' | 'one';
 
+function encodeWAV(buffer: AudioBuffer): Blob {
+  const numCh = buffer.numberOfChannels
+  const sr = buffer.sampleRate
+  const len = buffer.length
+  const dataSize = len * numCh * 2       // 16-bit PCM
+  const ab = new ArrayBuffer(44 + dataSize)
+  const view = new DataView(ab)
+  const ws = (off: number, s: string) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)) }
+  ws(0, 'RIFF'); view.setUint32(4, 36 + dataSize, true); ws(8, 'WAVE')
+  ws(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true)
+  view.setUint16(22, numCh, true); view.setUint32(24, sr, true)
+  view.setUint32(28, sr * numCh * 2, true); view.setUint16(32, numCh * 2, true); view.setUint16(34, 16, true)
+  ws(36, 'data'); view.setUint32(40, dataSize, true)
+  let off = 44
+  for (let i = 0; i < len; i++)
+    for (let c = 0; c < numCh; c++) {
+      const s = Math.max(-1, Math.min(1, buffer.getChannelData(c)[i]))
+      view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7FFF, true); off += 2
+    }
+  return new Blob([ab], { type: 'audio/wav' })
+}
+
 export interface AudioFile {
   id: string;
   file: File;
@@ -21,10 +43,16 @@ export interface AudioPlayerState {
   volume: number; // 0 to 1
   isMuted: boolean;
   loopMode: LoopMode;
+  isDownloading: boolean;
 }
 
 export function useAudioPlayer() {
-  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerEl, setContainerEl] = useState<HTMLDivElement | null>(null);
+  const containerElRef = useRef<HTMLDivElement | null>(null);
+  const containerRef = useCallback((el: HTMLDivElement | null) => {
+    containerElRef.current = el;
+    setContainerEl(el);
+  }, []);
   const wavesurferRef = useRef<WaveSurfer | null>(null);
   const reverbRef = useRef<Tone.Reverb | null>(null);
   // Using Tone.Player instead of MediaElementAudioSourceNode
@@ -43,6 +71,7 @@ export function useAudioPlayer() {
     volume: 1,
     isMuted: false,
     loopMode: 'off',
+    isDownloading: false,
   });
 
   // Refs for state access inside callbacks
@@ -64,10 +93,13 @@ export function useAudioPlayer() {
   // Store handleTrackEnd in a ref to avoid circular dependency in initialization
   // We need this because initializeAudio is called before handleTrackEnd is defined in the component body flow if we are not careful,
   // but actually useCallback handles hoisting fine. However, to be safe and clean:
-  const handleTrackEndRef = useRef<() => void>(null);
+  const handleTrackEndRef = useRef<(() => void) | null>(null);
 
   // Track seeking state
   const isSeekingRef = useRef(false);
+
+  // Ref for seeking timeout cleanup (prevents memory leak)
+  const seekingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Generation counter to abort stale concurrent playFile calls
   const loadGenRef = useRef(0);
@@ -97,12 +129,10 @@ export function useAudioPlayer() {
         // Apply current state values to the new player
         player.playbackRate = stateRef.current.speed;
         player.volume.value = stateRef.current.isMuted ? -Infinity : Tone.gainToDb(stateRef.current.volume);
-        
-        // Handle Track End Logic (attach listener)
+
+        // Handle track end (when audio finishes playing naturally)
         player.onstop = () => {
-            // Only trigger track end if we are NOT manually seeking/pausing
-            // and we expect it to be playing
-            if (stateRef.current.isPlaying && !isSeekingRef.current) { 
+            if (stateRef.current.isPlaying && !isSeekingRef.current) {
                 handleTrackEndRef.current?.();
             }
         };
@@ -112,7 +142,7 @@ export function useAudioPlayer() {
     })();
 
     return initializationPromiseRef.current;
-  }, []); 
+  }, []);
   
   // Clean up on unmount
   useEffect(() => {
@@ -120,15 +150,22 @@ export function useAudioPlayer() {
       playerRef.current?.dispose();
       reverbRef.current?.dispose();
       isInitializedRef.current = false;
+      // Revoke all object URLs to prevent memory leaks
+      filesRef.current.forEach(f => URL.revokeObjectURL(f.url));
     };
   }, []);
 
-  // Initialize WaveSurfer (Visualizer Only)
+  // Initialize WaveSurfer (Visualizer Only) — reactive to container element
   useEffect(() => {
-    if (!containerRef.current) return;
+    if (!containerEl) return;
+
+    if (wavesurferRef.current) {
+      wavesurferRef.current.destroy();
+      wavesurferRef.current = null;
+    }
 
     const ws = WaveSurfer.create({
-      container: containerRef.current,
+      container: containerEl,
       waveColor: '#a855f7',
       progressColor: '#7e22ce',
       cursorColor: '#ffffff',
@@ -136,25 +173,35 @@ export function useAudioPlayer() {
       barGap: 2,
       height: 128,
       normalize: true,
-      interact: true, // Enable seeking
+      interact: true,
       autoCenter: true,
-      volume: 0, // Mute at construction to prevent audio leak before setVolume(0)
     });
 
     wavesurferRef.current = ws;
 
-    // Handle user seeking on WaveSurfer
-    let seekingTimeout: NodeJS.Timeout;
+    // Reload current track if one is already selected
+    const currentFile = filesRef.current.find(f => f.id === currentFileIdRef.current);
+    if (currentFile) {
+      ws.load(currentFile.url)
+        .then(() => {
+          ws.setVolume(0);
+          ws.setTime(stateRef.current.currentTime);
+        })
+        .catch(() => {});
+    }
 
+    // Handle user seeking on WaveSurfer
     ws.on('interaction', (newTime) => {
         const player = playerRef.current;
         if (!player || !player.loaded) return;
 
         // Set seeking flag to prevent onstop from triggering track end logic
         isSeekingRef.current = true;
-        
+
         // Clear any existing timeout to keep flag active during rapid interactions
-        clearTimeout(seekingTimeout);
+        if (seekingTimeoutRef.current) {
+            clearTimeout(seekingTimeoutRef.current);
+        }
 
         // Commit time state before seeking
         timeRef.current.pausedAt = newTime;
@@ -162,22 +209,26 @@ export function useAudioPlayer() {
 
         if (player.state === 'started') {
             player.stop();
-            player.start(undefined, newTime); 
+            player.start(undefined, newTime);
             setState(prev => ({ ...prev, currentTime: newTime }));
         } else {
             setState(prev => ({ ...prev, currentTime: newTime }));
         }
-        
+
         // Reset seeking flag after a short delay to allow onstop to fire safely
-        seekingTimeout = setTimeout(() => {
+        seekingTimeoutRef.current = setTimeout(() => {
             isSeekingRef.current = false;
-        }, 200); // Increased safety margin
+        }, 200);
     });
 
     return () => {
+      if (seekingTimeoutRef.current) {
+        clearTimeout(seekingTimeoutRef.current);
+      }
       ws.destroy();
+      wavesurferRef.current = null;
     };
-  }, []);
+  }, [containerEl]);
 
   // Time tracking ref for synchronization
   const timeRef = useRef({
@@ -194,7 +245,7 @@ export function useAudioPlayer() {
     // iOS: unlock AudioContext as the very first operation in a user gesture handler.
     // Any await before this risks losing the gesture context on iOS/WKWebView.
     if (Tone.context.state !== 'running') {
-      try { await Tone.start(); } catch (e) {}
+      try { await Tone.start(); } catch (e) { console.warn('Failed to start audio context:', e); }
     }
     if (gen !== loadGenRef.current) return;
 
@@ -203,7 +254,53 @@ export function useAudioPlayer() {
     if (gen !== loadGenRef.current) return;
 
     const fileObj = filesRef.current.find(f => f.id === id);
-    if (!fileObj || !wavesurferRef.current || !playerRef.current) return;
+    if (!fileObj || !playerRef.current) return;
+
+    // Recreate WaveSurfer if it was destroyed
+    if (!wavesurferRef.current && containerElRef.current) {
+      const ws = WaveSurfer.create({
+        container: containerElRef.current,
+        waveColor: '#a855f7',
+        progressColor: '#7e22ce',
+        cursorColor: '#ffffff',
+        barWidth: 2,
+        barGap: 2,
+        height: 128,
+        normalize: true,
+        interact: true,
+        autoCenter: true,
+      });
+
+      wavesurferRef.current = ws;
+
+      // Setup interaction handler
+      ws.on('interaction', (newTime) => {
+        const player = playerRef.current;
+        if (!player || !player.loaded) return;
+
+        isSeekingRef.current = true;
+        if (seekingTimeoutRef.current) {
+          clearTimeout(seekingTimeoutRef.current);
+        }
+
+        timeRef.current.pausedAt = newTime;
+        timeRef.current.startedAt = Date.now();
+
+        if (player.state === 'started') {
+          player.stop();
+          player.start(undefined, newTime);
+          setState(prev => ({ ...prev, currentTime: newTime }));
+        } else {
+          setState(prev => ({ ...prev, currentTime: newTime }));
+        }
+
+        seekingTimeoutRef.current = setTimeout(() => {
+          isSeekingRef.current = false;
+        }, 200);
+      });
+    }
+
+    if (!wavesurferRef.current) return;
 
     const player = playerRef.current;
 
@@ -231,7 +328,7 @@ export function useAudioPlayer() {
         if (gen !== loadGenRef.current) return;
 
         // Update state
-        setState(prev => ({ ...prev, duration: player.buffer.duration }));
+        setState(prev => ({ ...prev, duration: player.buffer?.duration ?? 0 }));
         setIsReady(true);
 
         player.start();
@@ -243,9 +340,11 @@ export function useAudioPlayer() {
         player.volume.value = stateRef.current.isMuted ? -Infinity : Tone.gainToDb(stateRef.current.volume);
         if (reverbRef.current) reverbRef.current.wet.value = stateRef.current.reverb;
 
-    } catch (e) {
-        console.error("Error loading file", e);
+    } catch (err) {
+        console.error("Error loading file", err);
     }
+    // initializeAudio is stable (empty deps), safe to omit
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // --- Sync Loop (Update UI with Player progress) ---
@@ -323,34 +422,6 @@ export function useAudioPlayer() {
     }
   }, [state.loopMode]);
   
-  // Handle Track End (Playlist)
-  useEffect(() => {
-      // Tone.Player onstop fires when stopped manually OR ended.
-      // We need to differentiate. 
-      // Actually Tone.Player.onstop is the way.
-      if (!playerRef.current) return;
-      
-      playerRef.current.onstop = () => {
-          // If we are still "playing" in state but player stopped, it means track ended naturally
-          // (unless we stopped it manually in playFile, which updates state)
-          
-          // This is tricky because playFile calls stop().
-          // Let's assume onstop logic:
-          const { isPlaying, loopMode } = stateRef.current;
-          
-          // If we manually stopped (isPlaying became false), do nothing.
-          // Wait, playFile sets isPlaying=false momentarily.
-          
-          // Let's rely on checking if we reached duration? No.
-          
-          // Simple playlist logic:
-          if (stateRef.current.isPlaying) { 
-              // It stopped while we thought it should be playing -> Track Ended
-              handleTrackEnd();
-          }
-      };
-  }, []);
-  
   const handleTrackEnd = useCallback(() => {
       const { loopMode } = stateRef.current;
       const currentId = currentFileIdRef.current;
@@ -366,15 +437,23 @@ export function useAudioPlayer() {
           playerRef.current?.start();
           timeRef.current.startedAt = Date.now();
       } else if (loopMode === 'all') {
+        // Guard against empty file list (division by zero)
+        if (fileList.length === 0) return;
         const currentIndex = fileList.findIndex(f => f.id === currentId);
+        if (currentIndex === -1) return;
         const nextIndex = (currentIndex + 1) % fileList.length;
         playFile(fileList[nextIndex].id);
       } else {
         const currentIndex = fileList.findIndex(f => f.id === currentId);
+        if (currentIndex === -1) return;
         if (currentIndex < fileList.length - 1) {
           playFile(fileList[currentIndex + 1].id);
         } else {
+            // Prevent onstop from calling handleTrackEnd again
+            isSeekingRef.current = true;
+            playerRef.current?.stop();
             setState(prev => ({ ...prev, isPlaying: false }));
+            isSeekingRef.current = false;
         }
       }
   }, [playFile]);
@@ -404,7 +483,7 @@ export function useAudioPlayer() {
     // iOS: unlock AudioContext on file selection gesture.
     // This runs after UI update so the file list is visible even if Tone.start() is slow.
     if (Tone.context.state !== 'running') {
-      try { await Tone.start(); } catch (e) {}
+      try { await Tone.start(); } catch (e) { console.warn('Failed to start audio context:', e); }
     }
 
     // Initialize Audio (Async, might take time)
@@ -425,7 +504,7 @@ export function useAudioPlayer() {
   const togglePlay = useCallback(async () => {
     // iOS: unlock AudioContext as the very first operation in a user gesture handler.
     if (Tone.context.state !== 'running') {
-      try { await Tone.start(); } catch (e) {}
+      try { await Tone.start(); } catch (e) { console.warn('Failed to start audio context:', e); }
     }
 
     // Ensure Audio is initialized on user interaction
@@ -435,7 +514,7 @@ export function useAudioPlayer() {
 
     if (!playerRef.current || !isReady) return;
 
-    if (playerRef.current.state === 'started') {
+    if (stateRef.current.isPlaying) {
         // Pause Logic
         const now = Date.now();
         const elapsed = (now - timeRef.current.startedAt) / 1000;
@@ -455,6 +534,8 @@ export function useAudioPlayer() {
 
 
   const playNext = useCallback(() => {
+    // Guard against empty file list (division by zero)
+    if (filesRef.current.length === 0) return;
     const currentIndex = filesRef.current.findIndex(f => f.id === currentFileIdRef.current);
     if (currentIndex === -1) return;
     const nextIndex = (currentIndex + 1) % filesRef.current.length;
@@ -462,6 +543,8 @@ export function useAudioPlayer() {
   }, [playFile]);
 
   const playPrev = useCallback(() => {
+    // Guard against empty file list (division by zero)
+    if (filesRef.current.length === 0) return;
     const currentIndex = filesRef.current.findIndex(f => f.id === currentFileIdRef.current);
     if (currentIndex === -1) return;
     const prevIndex = (currentIndex - 1 + filesRef.current.length) % filesRef.current.length;
@@ -478,13 +561,121 @@ export function useAudioPlayer() {
     return { ...prev, loopMode: modes[nextIndex] };
   });
   const removeFile = (id: string) => {
-      setFiles(prev => prev.filter(f => f.id !== id));
-      if (currentFileId === id) {
+      const fileToRemove = filesRef.current.find(f => f.id === id);
+      
+      // Use ref instead of state to avoid stale closure
+      if (currentFileIdRef.current === id) {
+          // 1. Stop playback first
           playerRef.current?.stop();
+          
+          // 2. Destroy WaveSurfer completely (removes all visual elements)
+          if (wavesurferRef.current) {
+            wavesurferRef.current.destroy();
+            wavesurferRef.current = null;
+          }
+          
+          // 3. Clear state
           setCurrentFileId(null);
+          setIsReady(false);
           setState(prev => ({ ...prev, isPlaying: false, currentTime: 0, duration: 0 }));
+          
+          // 4. Reset time tracking
+          timeRef.current = { startedAt: 0, pausedAt: 0, speed: stateRef.current.speed };
       }
+      
+      // 5. Now revoke URL (after WaveSurfer stopped using it)
+      if (fileToRemove) {
+          URL.revokeObjectURL(fileToRemove.url);
+      }
+      
+      // 6. Update files state and ref
+      filesRef.current = filesRef.current.filter(f => f.id !== id);
+      setFiles(prev => prev.filter(f => f.id !== id));
   };
+
+  const clearAll = useCallback(() => {
+    // Invalidate any in-progress playFile calls (prevents race condition)
+    loadGenRef.current++;
+    
+    // 1. Stop playback first
+    playerRef.current?.stop();
+    
+    // 2. Destroy WaveSurfer completely (removes all visual elements)
+    if (wavesurferRef.current) {
+      wavesurferRef.current.destroy();
+      wavesurferRef.current = null;
+    }
+    
+    // 3. Clear state (this will cause WaveformDisplay to show "No track selected")
+    setFiles([]);
+    setCurrentFileId(null);
+    setIsReady(false);
+    setState(prev => ({
+      ...prev,
+      isPlaying: false,
+      currentTime: 0,
+      duration: 0,
+    }));
+    
+    // 4. Now it's safe to revoke URLs (after WaveSurfer stopped using them)
+    filesRef.current.forEach(f => URL.revokeObjectURL(f.url));
+    filesRef.current = [];
+    
+    // 5. Reset time tracking
+    timeRef.current = { startedAt: 0, pausedAt: 0, speed: stateRef.current.speed };
+  }, []);
+
+  const downloadWithEffects = useCallback(async () => {
+    const audioBuffer = playerRef.current?.buffer?.get()
+    if (!audioBuffer) return
+
+    const { speed, reverb: wet } = stateRef.current
+    const currentFile = filesRef.current.find(f => f.id === currentFileIdRef.current)
+    const baseName = currentFile?.name.replace(/\.[^/.]+$/, '') ?? 'remix'
+
+    setState(prev => ({ ...prev, isDownloading: true }))
+    try {
+      const outputDuration = audioBuffer.duration / speed
+      const tail = wet > 0 ? 4 : 0 // Extra time for reverb tail
+
+      // Use Tone.Offline to render with the same effects as preview
+      const rendered = await Tone.Offline(async () => {
+        // Create player with the original buffer
+        const offlinePlayer = new Tone.Player(audioBuffer)
+        offlinePlayer.playbackRate = speed
+
+        if (wet > 0) {
+          // Create reverb identical to the one used in preview
+          const offlineReverb = new Tone.Reverb({
+            decay: 4,
+            wet: wet,
+          })
+          await offlineReverb.generate() // Generate the impulse response
+          offlinePlayer.connect(offlineReverb)
+          offlineReverb.toDestination()
+        } else {
+          offlinePlayer.toDestination()
+        }
+
+        // Start playback
+        offlinePlayer.start(0)
+      }, outputDuration + tail, audioBuffer.numberOfChannels, audioBuffer.sampleRate)
+
+      // Convert ToneAudioBuffer to native AudioBuffer
+      const nativeBuffer = rendered.get() as AudioBuffer
+      const blob = encodeWAV(nativeBuffer)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url; a.download = `${baseName}_remix.wav`
+      document.body.appendChild(a); a.click()
+      document.body.removeChild(a); URL.revokeObjectURL(url)
+    } catch (error) {
+      console.error('Download failed:', error)
+      alert('Falha ao processar o áudio. Tente novamente.')
+    } finally {
+      setState(prev => ({ ...prev, isDownloading: false }))
+    }
+  }, [])
 
   return {
     containerRef,
@@ -494,6 +685,7 @@ export function useAudioPlayer() {
     addFiles,
     playFile,
     removeFile,
+    clearAll,
     togglePlay,
     playNext,
     playPrev,
@@ -502,5 +694,6 @@ export function useAudioPlayer() {
     setVolume,
     toggleMute,
     cycleLoopMode,
+    downloadWithEffects,
   };
 }

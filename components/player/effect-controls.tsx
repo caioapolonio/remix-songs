@@ -1,16 +1,16 @@
-import { useAudioPlayer } from "@/hooks/use-audio-player";
-import { Slider } from "@/components/ui/slider";
-import { Gauge, Sparkles } from "lucide-react";
+import { useAudioPlayer } from '@/hooks/use-audio-player'
+import { Slider } from '@/components/ui/slider'
+import { Gauge, Sparkles } from 'lucide-react'
 
 interface EffectControlsProps {
-  player: ReturnType<typeof useAudioPlayer>;
+  player: ReturnType<typeof useAudioPlayer>
 }
 
 export function EffectControls({ player }: EffectControlsProps) {
-  const { state, setSpeed, setReverb } = player;
+  const { state, setSpeed, setReverb } = player
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-8 p-6 bg-card rounded-lg border shadow-sm w-full max-w-4xl mx-auto">
+    <div className="flex flex-col gap-8 p-6 bg-card rounded-lg border shadow-sm w-full  mx-auto">
       {/* Speed Control */}
       <div className="space-y-4">
         <div className="flex items-center justify-between">
@@ -62,5 +62,5 @@ export function EffectControls({ player }: EffectControlsProps) {
         </div>
       </div>
     </div>
-  );
+  )
 }
