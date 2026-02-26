@@ -2,7 +2,6 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import WaveSurfer from 'wavesurfer.js';
 import * as Tone from 'tone';
 import { v4 as uuidv4 } from 'uuid';
-import { Mp3Encoder } from '@breezystack/lamejs';
 
 export type LoopMode = 'off' | 'all' | 'one';
 
@@ -28,45 +27,35 @@ function encodeWAV(buffer: AudioBuffer): Blob {
   return new Blob([ab], { type: 'audio/wav' })
 }
 
-function encodeMP3(buffer: AudioBuffer, kbps: number = 192): Blob {
-  const numCh = buffer.numberOfChannels
-  const sr = buffer.sampleRate
-  const len = buffer.length
+async function encodeMP3(buffer: AudioBuffer, kbps: number = 192): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(
+      new URL('../workers/mp3-encoder.worker.ts', import.meta.url)
+    );
 
-  // Convert Float32 samples to Int16
-  const convertToInt16 = (float32: Float32Array): Int16Array => {
-    const int16 = new Int16Array(float32.length)
-    for (let i = 0; i < float32.length; i++) {
-      const s = Math.max(-1, Math.min(1, float32[i]))
-      int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF
-    }
-    return int16
-  }
+    worker.onmessage = (e: MessageEvent<{ blob: Blob }>) => {
+      resolve(e.data.blob);
+      worker.terminate();
+    };
 
-  const left = convertToInt16(buffer.getChannelData(0))
-  const right = numCh > 1 ? convertToInt16(buffer.getChannelData(1)) : left
+    worker.onerror = (err) => {
+      reject(err);
+      worker.terminate();
+    };
 
-  const encoder = new Mp3Encoder(numCh, sr, kbps)
-  const mp3Data: Uint8Array[] = []
+    const leftChannel = buffer.getChannelData(0);
+    const rightChannel = buffer.numberOfChannels > 1 
+      ? buffer.getChannelData(1) 
+      : null;
 
-  // Process in chunks of 1152 samples (MP3 frame size)
-  const sampleBlockSize = 1152
-  for (let i = 0; i < len; i += sampleBlockSize) {
-    const leftChunk = left.subarray(i, i + sampleBlockSize)
-    const rightChunk = right.subarray(i, i + sampleBlockSize)
-    const mp3buf = encoder.encodeBuffer(leftChunk, rightChunk)
-    if (mp3buf.length > 0) {
-      mp3Data.push(new Uint8Array(mp3buf))
-    }
-  }
-
-  // Flush remaining data
-  const mp3End = encoder.flush()
-  if (mp3End.length > 0) {
-    mp3Data.push(new Uint8Array(mp3End))
-  }
-
-  return new Blob(mp3Data as BlobPart[], { type: 'audio/mp3' })
+    worker.postMessage({
+      leftChannel,
+      rightChannel,
+      sampleRate: buffer.sampleRate,
+      numChannels: buffer.numberOfChannels,
+      kbps,
+    });
+  });
 }
 
 export interface AudioFile {
@@ -146,6 +135,57 @@ export function useAudioPlayer() {
   // Generation counter to abort stale concurrent playFile calls
   const loadGenRef = useRef(0);
 
+  // Time tracking ref for synchronization
+  const timeRef = useRef({
+    startedAt: 0,
+    pausedAt: 0,
+    speed: 1,
+  });
+
+  // --- WaveSurfer Factory ---
+  // Creates a WaveSurfer instance with interaction handler configured
+  const createWaveSurfer = useCallback((container: HTMLDivElement): WaveSurfer => {
+    const ws = WaveSurfer.create({
+      container,
+      waveColor: '#a855f7',
+      progressColor: '#7e22ce',
+      cursorColor: '#ffffff',
+      barWidth: 2,
+      barGap: 2,
+      height: 128,
+      normalize: true,
+      interact: true,
+      autoCenter: true,
+    });
+
+    ws.on('interaction', (newTime) => {
+      const player = playerRef.current;
+      if (!player || !player.loaded) return;
+
+      isSeekingRef.current = true;
+      if (seekingTimeoutRef.current) {
+        clearTimeout(seekingTimeoutRef.current);
+      }
+
+      timeRef.current.pausedAt = newTime;
+      timeRef.current.startedAt = Date.now();
+
+      if (player.state === 'started') {
+        player.stop();
+        player.start(undefined, newTime);
+        setState(prev => ({ ...prev, currentTime: newTime }));
+      } else {
+        setState(prev => ({ ...prev, currentTime: newTime }));
+      }
+
+      seekingTimeoutRef.current = setTimeout(() => {
+        isSeekingRef.current = false;
+      }, 200);
+    });
+
+    return ws;
+  }, []);
+
   // Function to initialize Tone.js Effects Chain
   const initializeAudio = useCallback(async () => {
     if (isInitializedRef.current) return;
@@ -206,19 +246,7 @@ export function useAudioPlayer() {
       wavesurferRef.current = null;
     }
 
-    const ws = WaveSurfer.create({
-      container: containerEl,
-      waveColor: '#a855f7',
-      progressColor: '#7e22ce',
-      cursorColor: '#ffffff',
-      barWidth: 2,
-      barGap: 2,
-      height: 128,
-      normalize: true,
-      interact: true,
-      autoCenter: true,
-    });
-
+    const ws = createWaveSurfer(containerEl);
     wavesurferRef.current = ws;
 
     // Reload current track if one is already selected
@@ -232,37 +260,6 @@ export function useAudioPlayer() {
         .catch(() => {});
     }
 
-    // Handle user seeking on WaveSurfer
-    ws.on('interaction', (newTime) => {
-        const player = playerRef.current;
-        if (!player || !player.loaded) return;
-
-        // Set seeking flag to prevent onstop from triggering track end logic
-        isSeekingRef.current = true;
-
-        // Clear any existing timeout to keep flag active during rapid interactions
-        if (seekingTimeoutRef.current) {
-            clearTimeout(seekingTimeoutRef.current);
-        }
-
-        // Commit time state before seeking
-        timeRef.current.pausedAt = newTime;
-        timeRef.current.startedAt = Date.now();
-
-        if (player.state === 'started') {
-            player.stop();
-            player.start(undefined, newTime);
-            setState(prev => ({ ...prev, currentTime: newTime }));
-        } else {
-            setState(prev => ({ ...prev, currentTime: newTime }));
-        }
-
-        // Reset seeking flag after a short delay to allow onstop to fire safely
-        seekingTimeoutRef.current = setTimeout(() => {
-            isSeekingRef.current = false;
-        }, 200);
-    });
-
     return () => {
       if (seekingTimeoutRef.current) {
         clearTimeout(seekingTimeoutRef.current);
@@ -270,14 +267,7 @@ export function useAudioPlayer() {
       ws.destroy();
       wavesurferRef.current = null;
     };
-  }, [containerEl]);
-
-  // Time tracking ref for synchronization
-  const timeRef = useRef({
-    startedAt: 0,
-    pausedAt: 0,
-    speed: 1,
-  });
+  }, [containerEl, createWaveSurfer]);
 
   // --- Playback Logic ---
 
@@ -300,46 +290,7 @@ export function useAudioPlayer() {
 
     // Recreate WaveSurfer if it was destroyed
     if (!wavesurferRef.current && containerElRef.current) {
-      const ws = WaveSurfer.create({
-        container: containerElRef.current,
-        waveColor: '#a855f7',
-        progressColor: '#7e22ce',
-        cursorColor: '#ffffff',
-        barWidth: 2,
-        barGap: 2,
-        height: 128,
-        normalize: true,
-        interact: true,
-        autoCenter: true,
-      });
-
-      wavesurferRef.current = ws;
-
-      // Setup interaction handler
-      ws.on('interaction', (newTime) => {
-        const player = playerRef.current;
-        if (!player || !player.loaded) return;
-
-        isSeekingRef.current = true;
-        if (seekingTimeoutRef.current) {
-          clearTimeout(seekingTimeoutRef.current);
-        }
-
-        timeRef.current.pausedAt = newTime;
-        timeRef.current.startedAt = Date.now();
-
-        if (player.state === 'started') {
-          player.stop();
-          player.start(undefined, newTime);
-          setState(prev => ({ ...prev, currentTime: newTime }));
-        } else {
-          setState(prev => ({ ...prev, currentTime: newTime }));
-        }
-
-        seekingTimeoutRef.current = setTimeout(() => {
-          isSeekingRef.current = false;
-        }, 200);
-      });
+      wavesurferRef.current = createWaveSurfer(containerElRef.current);
     }
 
     if (!wavesurferRef.current) return;
@@ -385,20 +336,23 @@ export function useAudioPlayer() {
     } catch (err) {
         console.error("Error loading file", err);
     }
-    // initializeAudio is stable (empty deps), safe to omit
+    // initializeAudio and createWaveSurfer are stable (empty deps), safe to omit
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [createWaveSurfer]);
 
   // --- Sync Loop (Update UI with Player progress) ---
+  // Only runs when isPlaying is true to save CPU when paused/idle
   useEffect(() => {
+    if (!state.isPlaying) return;
+    
     let animationId: number;
     
     const loop = () => {
       const player = playerRef.current;
       const ws = wavesurferRef.current;
-      const { isPlaying, duration } = stateRef.current;
+      const { duration } = stateRef.current;
       
-      if (player && isPlaying && ws) {
+      if (player && ws) {
         // Calculate current time based on system clock and speed
         const now = Date.now();
         const elapsed = (now - timeRef.current.startedAt) / 1000;
@@ -418,7 +372,7 @@ export function useAudioPlayer() {
     loop();
     
     return () => cancelAnimationFrame(animationId);
-  }, []);
+  }, [state.isPlaying]);
 
   // --- Watchers for Controls ---
 
@@ -681,14 +635,16 @@ export function useAudioPlayer() {
       const tail = wet > 0 ? 4 : 0 // Extra time for reverb tail
 
       // Use Tone.Offline to render with the same effects as preview
-      const rendered = await Tone.Offline(async () => {
+      const rendered = await Tone.Offline(async ({ transport }) => {
         // Create player with the original buffer
         const offlinePlayer = new Tone.Player(audioBuffer)
         offlinePlayer.playbackRate = speed
 
+        let offlineReverb: Tone.Reverb | null = null
+
         if (wet > 0) {
           // Create reverb identical to the one used in preview
-          const offlineReverb = new Tone.Reverb({
+          offlineReverb = new Tone.Reverb({
             decay: 4,
             wet: wet,
           })
@@ -701,11 +657,20 @@ export function useAudioPlayer() {
 
         // Start playback
         offlinePlayer.start(0)
+
+        // Schedule cleanup before render ends to prevent memory leaks
+        const cleanupTime = Math.max(0, outputDuration + tail - 0.1)
+        transport.schedule(() => {
+          offlinePlayer.dispose()
+          offlineReverb?.dispose()
+        }, cleanupTime)
       }, outputDuration + tail, audioBuffer.numberOfChannels, audioBuffer.sampleRate)
 
       // Convert ToneAudioBuffer to native AudioBuffer
       const nativeBuffer = rendered.get() as AudioBuffer
-      const blob = format === 'mp3' ? encodeMP3(nativeBuffer) : encodeWAV(nativeBuffer)
+      const blob = format === 'mp3' 
+        ? await encodeMP3(nativeBuffer) 
+        : encodeWAV(nativeBuffer)
       const ext = format === 'mp3' ? 'mp3' : 'wav'
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
