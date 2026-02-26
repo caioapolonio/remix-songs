@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import WaveSurfer from 'wavesurfer.js';
 import * as Tone from 'tone';
 import { v4 as uuidv4 } from 'uuid';
+import { Mp3Encoder } from '@breezystack/lamejs';
 
 export type LoopMode = 'off' | 'all' | 'one';
 
@@ -25,6 +26,47 @@ function encodeWAV(buffer: AudioBuffer): Blob {
       view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7FFF, true); off += 2
     }
   return new Blob([ab], { type: 'audio/wav' })
+}
+
+function encodeMP3(buffer: AudioBuffer, kbps: number = 192): Blob {
+  const numCh = buffer.numberOfChannels
+  const sr = buffer.sampleRate
+  const len = buffer.length
+
+  // Convert Float32 samples to Int16
+  const convertToInt16 = (float32: Float32Array): Int16Array => {
+    const int16 = new Int16Array(float32.length)
+    for (let i = 0; i < float32.length; i++) {
+      const s = Math.max(-1, Math.min(1, float32[i]))
+      int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF
+    }
+    return int16
+  }
+
+  const left = convertToInt16(buffer.getChannelData(0))
+  const right = numCh > 1 ? convertToInt16(buffer.getChannelData(1)) : left
+
+  const encoder = new Mp3Encoder(numCh, sr, kbps)
+  const mp3Data: Uint8Array[] = []
+
+  // Process in chunks of 1152 samples (MP3 frame size)
+  const sampleBlockSize = 1152
+  for (let i = 0; i < len; i += sampleBlockSize) {
+    const leftChunk = left.subarray(i, i + sampleBlockSize)
+    const rightChunk = right.subarray(i, i + sampleBlockSize)
+    const mp3buf = encoder.encodeBuffer(leftChunk, rightChunk)
+    if (mp3buf.length > 0) {
+      mp3Data.push(new Uint8Array(mp3buf))
+    }
+  }
+
+  // Flush remaining data
+  const mp3End = encoder.flush()
+  if (mp3End.length > 0) {
+    mp3Data.push(new Uint8Array(mp3End))
+  }
+
+  return new Blob(mp3Data as BlobPart[], { type: 'audio/mp3' })
 }
 
 export interface AudioFile {
@@ -413,14 +455,11 @@ export function useAudioPlayer() {
     }
   }, [state.volume, state.isMuted]);
 
-  // Loop Mode Handling (Manual)
-  useEffect(() => {
-    // Tone.Player has .loop property
-    if (playerRef.current) {
-        // 'one' means loop this track. 'all' means playlist logic handled in onstop.
-        playerRef.current.loop = state.loopMode === 'one';
-    }
-  }, [state.loopMode]);
+  // Loop Mode Handling
+  // We intentionally do NOT use Tone.Player's native .loop property because
+  // it bypasses the onstop callback, which means timeRef and WaveSurfer
+  // wouldn't be reset when the track loops. Instead, we handle looping
+  // manually in handleTrackEnd for consistent behavior.
   
   const handleTrackEnd = useCallback(() => {
       const { loopMode } = stateRef.current;
@@ -433,9 +472,12 @@ export function useAudioPlayer() {
       if (!currentId) return;
 
       if (loopMode === 'one') {
-          // Handled by player.loop = true, but if it wasn't:
-          playerRef.current?.start();
+          // Restart the same track from the beginning
+          timeRef.current.pausedAt = 0;
           timeRef.current.startedAt = Date.now();
+          wavesurferRef.current?.setTime(0);
+          setState(prev => ({ ...prev, currentTime: 0 }));
+          playerRef.current?.start();
       } else if (loopMode === 'all') {
         // Guard against empty file list (division by zero)
         if (fileList.length === 0) return;
@@ -625,7 +667,7 @@ export function useAudioPlayer() {
     timeRef.current = { startedAt: 0, pausedAt: 0, speed: stateRef.current.speed };
   }, []);
 
-  const downloadWithEffects = useCallback(async () => {
+  const downloadWithFormat = useCallback(async (format: 'wav' | 'mp3') => {
     const audioBuffer = playerRef.current?.buffer?.get()
     if (!audioBuffer) return
 
@@ -663,10 +705,11 @@ export function useAudioPlayer() {
 
       // Convert ToneAudioBuffer to native AudioBuffer
       const nativeBuffer = rendered.get() as AudioBuffer
-      const blob = encodeWAV(nativeBuffer)
+      const blob = format === 'mp3' ? encodeMP3(nativeBuffer) : encodeWAV(nativeBuffer)
+      const ext = format === 'mp3' ? 'mp3' : 'wav'
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
-      a.href = url; a.download = `${baseName}_remix.wav`
+      a.href = url; a.download = `${baseName}_remix.${ext}`
       document.body.appendChild(a); a.click()
       document.body.removeChild(a); URL.revokeObjectURL(url)
     } catch (error) {
@@ -676,6 +719,9 @@ export function useAudioPlayer() {
       setState(prev => ({ ...prev, isDownloading: false }))
     }
   }, [])
+
+  const downloadWithEffects = useCallback(() => downloadWithFormat('wav'), [downloadWithFormat])
+  const downloadAsMP3 = useCallback(() => downloadWithFormat('mp3'), [downloadWithFormat])
 
   return {
     containerRef,
@@ -695,5 +741,6 @@ export function useAudioPlayer() {
     toggleMute,
     cycleLoopMode,
     downloadWithEffects,
+    downloadAsMP3,
   };
 }

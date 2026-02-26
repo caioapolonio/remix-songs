@@ -3,6 +3,12 @@ import { useAudioPlayer } from '@/hooks/use-audio-player'
 import { Button } from '@/components/ui/button'
 import { Slider } from '@/components/ui/slider'
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import {
   ChevronDown,
   Play,
   Pause,
@@ -45,6 +51,7 @@ export function MobilePlayerSheet({
     toggleMute,
     cycleLoopMode,
     downloadWithEffects,
+    downloadAsMP3,
   } = player
 
   const currentFile = files.find((f) => f.id === currentFileId)
@@ -200,16 +207,38 @@ export function MobilePlayerSheet({
 
         {/* Download */}
         <div className="flex justify-center pt-2 pb-4">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={!currentFileId || state.isDownloading}
-            onClick={downloadWithEffects}
-            className="gap-2"
-          >
-            <Download className="w-4 h-4" />
-            {state.isDownloading ? 'Rendering...' : 'Download Remix'}
-          </Button>
+          <div className="flex">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!currentFileId || state.isDownloading}
+              onClick={downloadWithEffects}
+              className="gap-2 rounded-r-none border-r-0"
+            >
+              <Download className="w-4 h-4" />
+              {state.isDownloading ? 'Rendering...' : 'Download'}
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!currentFileId || state.isDownloading}
+                  className="rounded-l-none px-2"
+                >
+                  <ChevronDown className="w-4 h-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={downloadWithEffects}>
+                  Download WAV
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={downloadAsMP3}>
+                  Download MP3
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
       </div>
     </div>

@@ -1,7 +1,21 @@
 import { useRef } from 'react'
 import { useAudioPlayer } from '@/hooks/use-audio-player'
 import { Button } from '@/components/ui/button'
-import { Music, Plus, Trash2, Download, Loader2, ListX } from 'lucide-react'
+import {
+  Music,
+  Plus,
+  Trash2,
+  Download,
+  Loader2,
+  ListX,
+  ChevronDown,
+} from 'lucide-react'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { cn } from '@/lib/utils'
 
 interface FileListProps {
@@ -31,27 +45,49 @@ export function FileList({ player }: FileListProps) {
   }
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 md:flex-none md:h-full bg-card border-r w-full md:w-1/3 max-w-2xl md:min-w-100">
+    <div className="flex flex-col flex-1 min-h-0 md:flex-none md:h-full bg-card border-r w-full md:w-1/3 md:max-w-2xl md:min-w-106">
       <div className="p-4 border-b flex justify-between items-center">
         <h2 className="text-lg font-semibold flex items-center gap-2">
           <Music className="w-5 h-5" />
           Library
         </h2>
         <div className="flex items-center gap-2">
-          <Button
-            size="default"
-            variant="outline"
-            disabled={!player.currentFileId || player.state.isDownloading}
-            onClick={player.downloadWithEffects}
-            className="gap-1.5 hidden md:flex"
-          >
-            {player.state.isDownloading ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Download className="w-4 h-4" />
-            )}
-            {player.state.isDownloading ? 'Rendering...' : 'Download'}
-          </Button>
+          <div className="hidden md:flex">
+            <Button
+              size="default"
+              variant="outline"
+              disabled={!player.currentFileId || player.state.isDownloading}
+              onClick={player.downloadWithEffects}
+              className="gap-1.5 rounded-r-none border-r-0"
+            >
+              {player.state.isDownloading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Download className="w-4 h-4" />
+              )}
+              {player.state.isDownloading ? 'Rendering...' : 'Download'}
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  size="default"
+                  variant="outline"
+                  disabled={!player.currentFileId || player.state.isDownloading}
+                  className="rounded-l-none px-2"
+                >
+                  <ChevronDown className="w-4 h-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={player.downloadWithEffects}>
+                  Download WAV
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={player.downloadAsMP3}>
+                  Download MP3
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
           <Button
             size="default"
             variant="destructive"
