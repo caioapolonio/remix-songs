@@ -31,7 +31,7 @@ export function FileList({ player }: FileListProps) {
   }
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 md:flex-none md:h-full bg-card border-r w-full md:w-1/3 max-w-2xl min-w-100">
+    <div className="flex flex-col flex-1 min-h-0 md:flex-none md:h-full bg-card border-r w-full md:w-1/3 max-w-2xl md:min-w-100">
       <div className="p-4 border-b flex justify-between items-center">
         <h2 className="text-lg font-semibold flex items-center gap-2">
           <Music className="w-5 h-5" />
