@@ -43,7 +43,7 @@ export function FileList({ player }: FileListProps) {
             variant="outline"
             disabled={!player.currentFileId || player.state.isDownloading}
             onClick={player.downloadWithEffects}
-            className="gap-1.5"
+            className="gap-1.5 hidden md:flex"
           >
             {player.state.isDownloading ? (
               <Loader2 className="w-4 h-4 animate-spin" />
@@ -54,13 +54,13 @@ export function FileList({ player }: FileListProps) {
           </Button>
           <Button
             size="default"
-            variant="outline"
+            variant="destructive"
             disabled={player.files.length === 0}
             onClick={player.clearAll}
             className="gap-1.5"
           >
             <ListX className="w-4 h-4" />
-            Clear
+            <span className="hidden md:inline">Clear</span>
           </Button>
           <Button
             size="icon"
