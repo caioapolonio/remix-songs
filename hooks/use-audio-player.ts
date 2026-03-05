@@ -5,6 +5,20 @@ import { v4 as uuidv4 } from 'uuid';
 
 export type LoopMode = 'off' | 'all' | 'one';
 
+interface FileSettings {
+  speed: number;
+  reverb: number;
+  volume: number;
+  isMuted: boolean;
+}
+
+const defaultFileSettings: FileSettings = {
+  speed: 1,
+  reverb: 0,
+  volume: 1,
+  isMuted: false,
+};
+
 function encodeWAV(buffer: AudioBuffer): Blob {
   const numCh = buffer.numberOfChannels
   const sr = buffer.sampleRate
@@ -92,6 +106,7 @@ export function useAudioPlayer() {
   const [files, setFiles] = useState<AudioFile[]>([]);
   const [currentFileId, setCurrentFileId] = useState<string | null>(null);
   const [isReady, setIsReady] = useState(false);
+  const [perFileSettings, setPerFileSettings] = useState<Record<string, FileSettings>>({});
   
   const [state, setState] = useState<AudioPlayerState>({
     isPlaying: false,
@@ -111,9 +126,22 @@ export function useAudioPlayer() {
   
   const filesRef = useRef(files);
   useEffect(() => { filesRef.current = files; }, [files]);
+
+  const perFileSettingsRef = useRef(perFileSettings);
+  useEffect(() => { perFileSettingsRef.current = perFileSettings; }, [perFileSettings]);
   
   const currentFileIdRef = useRef(currentFileId);
   useEffect(() => { currentFileIdRef.current = currentFileId; }, [currentFileId]);
+
+  const updateFileSettings = useCallback((id: string | null, partial: Partial<FileSettings>) => {
+    if (!id) return;
+    setPerFileSettings(prev => {
+      const current = prev[id] ?? defaultFileSettings;
+      const next = { ...prev, [id]: { ...current, ...partial } };
+      perFileSettingsRef.current = next;
+      return next;
+    });
+  }, []);
 
   // --- Initialization ---
   
@@ -305,10 +333,21 @@ export function useAudioPlayer() {
     setCurrentFileId(id);
     setIsReady(false);
 
-    // Reset time tracking
-    timeRef.current = { startedAt: 0, pausedAt: 0, speed: stateRef.current.speed };
+    const settings = perFileSettingsRef.current[id] ?? defaultFileSettings;
 
-    setState(prev => ({ ...prev, isPlaying: false, currentTime: 0, duration: 0 }));
+    // Reset time tracking
+    timeRef.current = { startedAt: 0, pausedAt: 0, speed: settings.speed };
+
+    setState(prev => ({
+      ...prev,
+      isPlaying: false,
+      currentTime: 0,
+      duration: 0,
+      speed: settings.speed,
+      reverb: settings.reverb,
+      volume: settings.volume,
+      isMuted: settings.isMuted,
+    }));
 
     try {
         // Load into Tone.Player (Decodes audio - Critical for mobile stability)
@@ -328,10 +367,10 @@ export function useAudioPlayer() {
         timeRef.current.startedAt = Date.now(); // Track start time
         setState(prev => ({ ...prev, isPlaying: true }));
 
-        // Reset playback rate/volume/reverb to current state values
-        player.playbackRate = stateRef.current.speed;
-        player.volume.value = stateRef.current.isMuted ? -Infinity : Tone.gainToDb(stateRef.current.volume);
-        if (reverbRef.current) reverbRef.current.wet.value = stateRef.current.reverb;
+        // Reset playback rate/volume/reverb to file settings
+        player.playbackRate = settings.speed;
+        player.volume.value = settings.isMuted ? -Infinity : Tone.gainToDb(settings.volume);
+        if (reverbRef.current) reverbRef.current.wet.value = settings.reverb;
 
     } catch (err) {
         console.error("Error loading file", err);
@@ -470,11 +509,24 @@ export function useAudioPlayer() {
       url: URL.createObjectURL(file),
     }));
 
-    // Optimistically update ref so playFile can work immediately if called
+    const newSettings: Record<string, FileSettings> = {};
+    audioFiles.forEach(file => {
+      newSettings[file.id] = defaultFileSettings;
+    });
+
+    // Optimistically update refs so playFile can work immediately if called
     filesRef.current = [...filesRef.current, ...audioFiles];
+    perFileSettingsRef.current = {
+      ...perFileSettingsRef.current,
+      ...newSettings,
+    };
 
     // Update UI IMMEDIATELY (no await before this)
     setFiles(prev => [...prev, ...audioFiles]);
+    setPerFileSettings(prev => ({
+      ...prev,
+      ...newSettings,
+    }));
 
     // iOS: unlock AudioContext on file selection gesture.
     // This runs after UI update so the file list is visible even if Tone.start() is slow.
@@ -547,10 +599,22 @@ export function useAudioPlayer() {
     playFile(filesRef.current[prevIndex].id);
   }, [playFile]);
 
-  const setSpeed = (speed: number) => setState(prev => ({ ...prev, speed }));
-  const setReverb = (reverb: number) => setState(prev => ({ ...prev, reverb }));
-  const setVolume = (volume: number) => setState(prev => ({ ...prev, volume }));
-  const toggleMute = () => setState(prev => ({ ...prev, isMuted: !prev.isMuted }));
+  const setSpeed = (speed: number) => {
+    setState(prev => ({ ...prev, speed }));
+    updateFileSettings(currentFileIdRef.current, { speed });
+  };
+  const setReverb = (reverb: number) => {
+    setState(prev => ({ ...prev, reverb }));
+    updateFileSettings(currentFileIdRef.current, { reverb });
+  };
+  const setVolume = (volume: number) => {
+    setState(prev => ({ ...prev, volume }));
+    updateFileSettings(currentFileIdRef.current, { volume });
+  };
+  const toggleMute = () => {
+    setState(prev => ({ ...prev, isMuted: !prev.isMuted }));
+    updateFileSettings(currentFileIdRef.current, { isMuted: !stateRef.current.isMuted });
+  };
   const cycleLoopMode = () => setState(prev => {
     const modes: LoopMode[] = ['off', 'all', 'one'];
     const nextIndex = (modes.indexOf(prev.loopMode) + 1) % modes.length;
@@ -584,9 +648,16 @@ export function useAudioPlayer() {
           URL.revokeObjectURL(fileToRemove.url);
       }
       
-      // 6. Update files state and ref
-      filesRef.current = filesRef.current.filter(f => f.id !== id);
-      setFiles(prev => prev.filter(f => f.id !== id));
+       // 6. Update files state and ref
+       filesRef.current = filesRef.current.filter(f => f.id !== id);
+       setFiles(prev => prev.filter(f => f.id !== id));
+
+       setPerFileSettings(prev => {
+         const next = { ...prev };
+         delete next[id];
+         perFileSettingsRef.current = next;
+         return next;
+       });
   };
 
   const clearAll = useCallback(() => {
@@ -616,6 +687,9 @@ export function useAudioPlayer() {
     // 4. Now it's safe to revoke URLs (after WaveSurfer stopped using them)
     filesRef.current.forEach(f => URL.revokeObjectURL(f.url));
     filesRef.current = [];
+
+     setPerFileSettings({});
+     perFileSettingsRef.current = {};
     
     // 5. Reset time tracking
     timeRef.current = { startedAt: 0, pausedAt: 0, speed: stateRef.current.speed };
