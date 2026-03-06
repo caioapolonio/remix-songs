@@ -1,5 +1,7 @@
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import { useAudioPlayer } from '@/hooks/use-audio-player'
+import { useSubscription } from '@/components/subscription-provider'
+import { UpgradeModal } from '@/components/upgrade-modal'
 import { Button } from '@/components/ui/button'
 import {
   Music,
@@ -24,6 +26,8 @@ interface FileListProps {
 
 export function FileList({ player }: FileListProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const [upgradeOpen, setUpgradeOpen] = useState(false)
+  const { isPro } = useSubscription()
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const fileList = e.target.files
@@ -41,6 +45,10 @@ export function FileList({ player }: FileListProps) {
   }
 
   const handleBrowseClick = () => {
+    if (!isPro && player.files.length >= 1) {
+      setUpgradeOpen(true)
+      return
+    }
     fileInputRef.current?.click()
   }
 
@@ -82,7 +90,15 @@ export function FileList({ player }: FileListProps) {
                 <DropdownMenuItem onClick={player.downloadWithEffects}>
                   Download WAV
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={player.downloadAsMP3}>
+                <DropdownMenuItem
+                  onClick={() => {
+                    if (!isPro) {
+                      setUpgradeOpen(true)
+                    } else {
+                      player.downloadAsMP3()
+                    }
+                  }}
+                >
                   Download MP3
                 </DropdownMenuItem>
               </DropdownMenuContent>
@@ -191,6 +207,7 @@ export function FileList({ player }: FileListProps) {
           </div>
         )}
       </div>
+      <UpgradeModal open={upgradeOpen} onOpenChange={setUpgradeOpen} />
     </div>
   )
 }

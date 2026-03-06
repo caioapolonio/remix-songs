@@ -1,16 +1,33 @@
+'use client'
+
+import { useState } from 'react'
 import { useAudioPlayer } from '@/hooks/use-audio-player'
+import { useSubscription } from '@/components/subscription-provider'
+import { UpgradeModal } from '@/components/upgrade-modal'
 import { Slider } from '@/components/ui/slider'
-import { Gauge, Sparkles } from 'lucide-react'
+import { PresetSelector } from '@/components/player/preset-selector'
+import { Gauge, Sparkles, AudioLines, Lock } from 'lucide-react'
 
 interface EffectControlsProps {
   player: ReturnType<typeof useAudioPlayer>
 }
 
 export function EffectControls({ player }: EffectControlsProps) {
-  const { state, setSpeed, setReverb } = player
+  const { state, setSpeed, setReverb, setBass } = player
+  const { isPro } = useSubscription()
+  const [upgradeOpen, setUpgradeOpen] = useState(false)
 
   return (
     <div className="flex flex-col gap-8 p-6 bg-card rounded-lg border shadow-sm w-full  mx-auto">
+      <PresetSelector
+        speed={state.speed}
+        reverb={state.reverb}
+        bass={state.bass}
+        setSpeed={setSpeed}
+        setReverb={setReverb}
+        setBass={setBass}
+      />
+
       {/* Speed Control */}
       <div className="space-y-4">
         <div className="flex items-center justify-between">
@@ -61,6 +78,56 @@ export function EffectControls({ player }: EffectControlsProps) {
           <span>Wet</span>
         </div>
       </div>
+
+      {/* Bass Boost Control */}
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <AudioLines className="w-5 h-5 text-orange-500" />
+            <label className="text-sm font-medium">Bass Boost</label>
+          </div>
+          <span className="text-sm text-muted-foreground font-mono bg-accent px-2 py-0.5 rounded">
+            {state.bass.toFixed(1)} dB
+          </span>
+        </div>
+        {isPro ? (
+          <>
+            <Slider
+              value={[state.bass]}
+              min={0}
+              max={12}
+              step={0.5}
+              onValueChange={([val]) => setBass(val)}
+              className="py-2"
+            />
+            <div className="flex justify-between text-xs text-muted-foreground px-1">
+              <span>0 dB</span>
+              <span>6</span>
+              <span>12</span>
+            </div>
+          </>
+        ) : (
+          <div
+            className="relative cursor-pointer"
+            onClick={() => setUpgradeOpen(true)}
+          >
+            <Slider
+              value={[0]}
+              min={0}
+              max={12}
+              step={0.5}
+              disabled
+              className="py-2"
+            />
+            <div className="absolute inset-0 bg-background/60 backdrop-blur-[1px] rounded flex items-center justify-center gap-1.5">
+              <Lock className="w-3.5 h-3.5 text-muted-foreground" />
+              <span className="text-xs font-medium text-muted-foreground">Pro</span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <UpgradeModal open={upgradeOpen} onOpenChange={setUpgradeOpen} />
     </div>
   )
 }

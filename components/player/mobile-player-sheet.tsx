@@ -1,5 +1,8 @@
 'use client'
+import { useState } from 'react'
 import { useAudioPlayer } from '@/hooks/use-audio-player'
+import { useSubscription } from '@/components/subscription-provider'
+import { UpgradeModal } from '@/components/upgrade-modal'
 import { Button } from '@/components/ui/button'
 import { Slider } from '@/components/ui/slider'
 import {
@@ -21,8 +24,11 @@ import {
   Volume1,
   Gauge,
   Sparkles,
+  AudioLines,
+  Lock,
   Download,
 } from 'lucide-react'
+import { PresetSelector } from '@/components/player/preset-selector'
 import { cn } from '@/lib/utils'
 
 interface MobilePlayerSheetProps {
@@ -47,6 +53,7 @@ export function MobilePlayerSheet({
     playPrev,
     setSpeed,
     setReverb,
+    setBass,
     setVolume,
     toggleMute,
     cycleLoopMode,
@@ -54,6 +61,8 @@ export function MobilePlayerSheet({
     downloadAsMP3,
   } = player
 
+  const { isPro } = useSubscription()
+  const [upgradeOpen, setUpgradeOpen] = useState(false)
   const currentFile = files.find((f) => f.id === currentFileId)
 
   const getVolumeIcon = () => {
@@ -89,6 +98,15 @@ export function MobilePlayerSheet({
       <div className="flex-1 overflow-y-auto flex flex-col gap-7 px-4 py-4">
         {/* Waveform slot — portal target */}
         <div ref={onWaveformMount} className="w-full" />
+
+        <PresetSelector
+          speed={state.speed}
+          reverb={state.reverb}
+          bass={state.bass}
+          setSpeed={setSpeed}
+          setReverb={setReverb}
+          setBass={setBass}
+        />
 
         {/* Speed slider */}
         <div className="space-y-2">
@@ -128,6 +146,45 @@ export function MobilePlayerSheet({
             step={0.01}
             onValueChange={([val]) => setReverb(val)}
           />
+        </div>
+
+        {/* Bass Boost slider */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <AudioLines className="w-3.5 h-3.5 text-orange-500" />
+              <span className="text-xs font-medium">Bass Boost</span>
+            </div>
+            <span className="text-xs text-muted-foreground font-mono bg-accent px-1.5 py-0.5 rounded">
+              {state.bass.toFixed(1)} dB
+            </span>
+          </div>
+          {isPro ? (
+            <Slider
+              value={[state.bass]}
+              min={0}
+              max={12}
+              step={0.5}
+              onValueChange={([val]) => setBass(val)}
+            />
+          ) : (
+            <div
+              className="relative cursor-pointer"
+              onClick={() => setUpgradeOpen(true)}
+            >
+              <Slider
+                value={[0]}
+                min={0}
+                max={12}
+                step={0.5}
+                disabled
+              />
+              <div className="absolute inset-0 bg-background/60 backdrop-blur-[1px] rounded flex items-center justify-center gap-1.5">
+                <Lock className="w-3.5 h-3.5 text-muted-foreground" />
+                <span className="text-xs font-medium text-muted-foreground">Pro</span>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Playback controls */}
@@ -241,6 +298,7 @@ export function MobilePlayerSheet({
           </div>
         </div>
       </div>
+      <UpgradeModal open={upgradeOpen} onOpenChange={setUpgradeOpen} />
     </div>
   )
 }

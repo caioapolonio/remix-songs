@@ -8,6 +8,7 @@ export type LoopMode = 'off' | 'all' | 'one';
 interface FileSettings {
   speed: number;
   reverb: number;
+  bass: number;
   volume: number;
   isMuted: boolean;
 }
@@ -15,6 +16,7 @@ interface FileSettings {
 const defaultFileSettings: FileSettings = {
   speed: 1,
   reverb: 0,
+  bass: 0,
   volume: 1,
   isMuted: false,
 };
@@ -85,6 +87,7 @@ export interface AudioPlayerState {
   duration: number;
   speed: number;
   reverb: number; // 0 to 1 (wet/dry)
+  bass: number; // 0 to 12 (dB boost)
   volume: number; // 0 to 1
   isMuted: boolean;
   loopMode: LoopMode;
@@ -100,8 +103,9 @@ export function useAudioPlayer() {
   }, []);
   const wavesurferRef = useRef<WaveSurfer | null>(null);
   const reverbRef = useRef<Tone.Reverb | null>(null);
+  const bassBoostRef = useRef<Tone.BiquadFilter | null>(null);
   // Using Tone.Player instead of MediaElementAudioSourceNode
-  const playerRef = useRef<Tone.Player | null>(null); 
+  const playerRef = useRef<Tone.Player | null>(null);
 
   const [files, setFiles] = useState<AudioFile[]>([]);
   const [currentFileId, setCurrentFileId] = useState<string | null>(null);
@@ -114,6 +118,7 @@ export function useAudioPlayer() {
     duration: 0,
     speed: 1,
     reverb: 0,
+    bass: 0,
     volume: 1,
     isMuted: false,
     loopMode: 'off',
@@ -232,8 +237,16 @@ export function useAudioPlayer() {
 
         reverbRef.current = reverb;
 
+        // BiquadFilter lowshelf for bass boost (clean, no phase artifacts)
+        const bassBoost = new Tone.BiquadFilter({
+          frequency: 150,
+          type: "lowshelf",
+          gain: 0,
+        }).connect(reverb);
+        bassBoostRef.current = bassBoost;
+
         // Player (Single instance reused)
-        const player = new Tone.Player().connect(reverb);
+        const player = new Tone.Player().connect(bassBoost);
         playerRef.current = player;
         
         // Apply current state values to the new player
@@ -258,6 +271,7 @@ export function useAudioPlayer() {
   useEffect(() => {
     return () => {
       playerRef.current?.dispose();
+      bassBoostRef.current?.dispose();
       reverbRef.current?.dispose();
       isInitializedRef.current = false;
       // Revoke all object URLs to prevent memory leaks
@@ -345,6 +359,7 @@ export function useAudioPlayer() {
       duration: 0,
       speed: settings.speed,
       reverb: settings.reverb,
+      bass: settings.bass,
       volume: settings.volume,
       isMuted: settings.isMuted,
     }));
@@ -371,6 +386,7 @@ export function useAudioPlayer() {
         player.playbackRate = settings.speed;
         player.volume.value = settings.isMuted ? -Infinity : Tone.gainToDb(settings.volume);
         if (reverbRef.current) reverbRef.current.wet.value = settings.reverb;
+        if (bassBoostRef.current) bassBoostRef.current.gain.value = settings.bass;
 
     } catch (err) {
         console.error("Error loading file", err);
@@ -439,6 +455,13 @@ export function useAudioPlayer() {
         reverbRef.current.wet.value = state.reverb;
     }
   }, [state.reverb]);
+
+  // Bass boost
+  useEffect(() => {
+    if (bassBoostRef.current) {
+      bassBoostRef.current.gain.value = state.bass;
+    }
+  }, [state.bass]);
 
   // Volume / Mute
   useEffect(() => {
@@ -607,6 +630,10 @@ export function useAudioPlayer() {
     setState(prev => ({ ...prev, reverb }));
     updateFileSettings(currentFileIdRef.current, { reverb });
   };
+  const setBass = (bass: number) => {
+    setState(prev => ({ ...prev, bass }));
+    updateFileSettings(currentFileIdRef.current, { bass });
+  };
   const setVolume = (volume: number) => {
     setState(prev => ({ ...prev, volume }));
     updateFileSettings(currentFileIdRef.current, { volume });
@@ -699,7 +726,7 @@ export function useAudioPlayer() {
     const audioBuffer = playerRef.current?.buffer?.get()
     if (!audioBuffer) return
 
-    const { speed, reverb: wet } = stateRef.current
+    const { speed, reverb: wet, bass } = stateRef.current
     const currentFile = filesRef.current.find(f => f.id === currentFileIdRef.current)
     const baseName = currentFile?.name.replace(/\.[^/.]+$/, '') ?? 'remix'
 
@@ -715,19 +742,32 @@ export function useAudioPlayer() {
         offlinePlayer.playbackRate = speed
 
         let offlineReverb: Tone.Reverb | null = null
+        let offlineBassBoost: Tone.BiquadFilter | null = null
+
+        // Build chain: Player → [BiquadFilter] → [Reverb] → destination
+        let lastNode: Tone.ToneAudioNode = offlinePlayer
+
+        if (bass > 0) {
+          offlineBassBoost = new Tone.BiquadFilter({
+            frequency: 150,
+            type: "lowshelf",
+            gain: bass,
+          })
+          lastNode.connect(offlineBassBoost)
+          lastNode = offlineBassBoost
+        }
 
         if (wet > 0) {
-          // Create reverb identical to the one used in preview
           offlineReverb = new Tone.Reverb({
             decay: 4,
             wet: wet,
           })
-          await offlineReverb.generate() // Generate the impulse response
-          offlinePlayer.connect(offlineReverb)
-          offlineReverb.toDestination()
-        } else {
-          offlinePlayer.toDestination()
+          await offlineReverb.generate()
+          lastNode.connect(offlineReverb)
+          lastNode = offlineReverb
         }
+
+        lastNode.toDestination()
 
         // Start playback
         offlinePlayer.start(0)
@@ -736,6 +776,7 @@ export function useAudioPlayer() {
         const cleanupTime = Math.max(0, outputDuration + tail - 0.1)
         transport.schedule(() => {
           offlinePlayer.dispose()
+          offlineBassBoost?.dispose()
           offlineReverb?.dispose()
         }, cleanupTime)
       }, outputDuration + tail, audioBuffer.numberOfChannels, audioBuffer.sampleRate)
@@ -776,6 +817,7 @@ export function useAudioPlayer() {
     playPrev,
     setSpeed,
     setReverb,
+    setBass,
     setVolume,
     toggleMute,
     cycleLoopMode,
