@@ -12,10 +12,15 @@ export async function signup(formData: FormData) {
     password: formData.get('password') as string,
   }
 
-  const { error } = await supabase.auth.signUp(data)
+  const { data: signUpData, error } = await supabase.auth.signUp(data)
 
   if (error) {
     redirect('/signup?error=' + encodeURIComponent(error.message))
+  }
+
+  // Supabase returns empty identities when email already registered
+  if (signUpData.user?.identities?.length === 0) {
+    redirect('/signup?error=' + encodeURIComponent('An account with this email already exists. Try logging in.'))
   }
 
   revalidatePath('/', 'layout')
