@@ -11,6 +11,7 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Check, Loader2 } from 'lucide-react'
+import { toast } from 'sonner'
 import { useSubscription } from '@/components/subscription-provider'
 
 const proFeatures = [
@@ -20,7 +21,6 @@ const proFeatures = [
   'Create multiple remixes at once',
   'Save custom presets',
   'Trim remix start and end',
-  'Set custom default settings',
 ]
 
 interface UpgradeModalProps {
@@ -37,8 +37,14 @@ export function UpgradeModal({ open, onOpenChange }: UpgradeModalProps) {
     try {
       const res = await fetch('/api/checkout', { method: 'POST' })
       const { url } = await res.json()
+      if (!res.ok || !url) {
+        toast.error('Failed to start checkout. Please try again.')
+        setLoading(false)
+        return
+      }
       window.location.href = url
     } catch {
+      toast.error('Failed to start checkout. Please try again.')
       setLoading(false)
     }
   }

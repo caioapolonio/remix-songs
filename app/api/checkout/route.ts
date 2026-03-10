@@ -26,9 +26,17 @@ export async function POST() {
     // Get or create Stripe customer
     const { data: profile } = await supabase
       .from('profiles')
-      .select('stripe_customer_id')
+      .select('stripe_customer_id, subscription_status')
       .eq('id', user.id)
       .single()
+
+    // Block already-active subscribers from creating a second subscription
+    if (profile?.subscription_status === 'active') {
+      return NextResponse.json(
+        { error: 'You already have an active subscription' },
+        { status: 400 }
+      )
+    }
 
     let customerId = profile?.stripe_customer_id
 
@@ -41,10 +49,36 @@ export async function POST() {
 
       // Use admin client — authenticated users cannot update stripe_customer_id
       const admin = createAdminClient()
-      await admin
+      const { error: updateError } = await admin
         .from('profiles')
         .update({ stripe_customer_id: customerId })
         .eq('id', user.id)
+
+      if (updateError) {
+        console.error('Failed to save stripe_customer_id:', updateError)
+        return NextResponse.json(
+          { error: 'Failed to set up billing. Please try again.' },
+          { status: 500 }
+        )
+      }
+
+      // Re-read to confirm save (guards against race condition with concurrent requests)
+      const { data: updated } = await admin
+        .from('profiles')
+        .select('stripe_customer_id')
+        .eq('id', user.id)
+        .single()
+
+      if (updated?.stripe_customer_id !== customerId) {
+        // Another request won the race — use their customer ID
+        customerId = updated?.stripe_customer_id
+        if (!customerId) {
+          return NextResponse.json(
+            { error: 'Failed to set up billing. Please try again.' },
+            { status: 500 }
+          )
+        }
+      }
     }
 
     // Create checkout session

@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { useSubscription } from '@/components/subscription-provider'
 import { Button } from '@/components/ui/button'
 import { Check, Crown, Loader2 } from 'lucide-react'
+import { toast } from 'sonner'
 
 const proFeatures = [
   'Everything in Free',
@@ -13,7 +14,6 @@ const proFeatures = [
   'Create multiple remixes at once',
   'Save custom presets',
   'Trim remix start and end',
-  'Set custom default settings',
 ]
 
 export default function ProPage() {
@@ -25,8 +25,14 @@ export default function ProPage() {
     try {
       const res = await fetch('/api/checkout', { method: 'POST' })
       const { url } = await res.json()
+      if (!res.ok || !url) {
+        toast.error('Failed to start checkout. Please try again.')
+        setLoading(false)
+        return
+      }
       window.location.href = url
     } catch {
+      toast.error('Failed to start checkout. Please try again.')
       setLoading(false)
     }
   }
@@ -36,8 +42,14 @@ export default function ProPage() {
     try {
       const res = await fetch('/api/portal', { method: 'POST' })
       const { url } = await res.json()
+      if (!res.ok || !url) {
+        toast.error('Failed to open billing portal. Please try again.')
+        setLoading(false)
+        return
+      }
       window.location.href = url
     } catch {
+      toast.error('Failed to open billing portal. Please try again.')
       setLoading(false)
     }
   }

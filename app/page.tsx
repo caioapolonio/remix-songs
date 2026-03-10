@@ -7,7 +7,6 @@ import {
   Sliders,
   Scissors,
   Layers,
-  Settings,
 } from 'lucide-react'
 
 const features = [
@@ -36,11 +35,6 @@ const features = [
     icon: Scissors,
     title: 'Trim & Cut',
     description: 'Trim the start and end of your remix before exporting.',
-  },
-  {
-    icon: Settings,
-    title: 'Default Settings',
-    description: 'Set your preferred speed, reverb, and volume as defaults.',
   },
 ]
 
@@ -85,11 +79,11 @@ export default function LandingPage() {
               Unlock powerful features for $5/month.
             </p>
           </div>
-          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="flex flex-wrap justify-center gap-6">
             {features.map((feature) => (
               <div
                 key={feature.title}
-                className="rounded-lg border bg-background p-6 shadow-sm"
+                className="w-full sm:w-[calc(50%-12px)] lg:w-[calc(33.333%-16px)] rounded-lg border bg-background p-6 shadow-sm"
               >
                 <feature.icon className="mb-3 h-8 w-8 text-primary" />
                 <h3 className="mb-1 font-semibold">{feature.title}</h3>

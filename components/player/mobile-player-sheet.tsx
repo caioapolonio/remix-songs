@@ -82,12 +82,14 @@ export function MobilePlayerSheet({
     >
       {/* Header: close button + track name */}
       <div className="flex items-center justify-between px-4 pt-4 pb-2 border-b shrink-0">
-        <button
+        <Button
+          variant="ghost"
+          size="icon"
+          className="-ml-2"
           onClick={onClose}
-          className="p-2 -ml-2 rounded-full hover:bg-accent"
         >
           <ChevronDown className="w-5 h-5" />
-        </button>
+        </Button>
         <span className="text-sm font-semibold truncate px-2 flex-1 text-center">
           {currentFile?.name ?? 'No track'}
         </span>
@@ -103,9 +105,11 @@ export function MobilePlayerSheet({
           speed={state.speed}
           reverb={state.reverb}
           bass={state.bass}
+          volume={state.volume}
           setSpeed={setSpeed}
           setReverb={setReverb}
           setBass={setBass}
+          setVolume={setVolume}
         />
 
         {/* Speed slider */}
@@ -180,8 +184,8 @@ export function MobilePlayerSheet({
                 disabled
               />
               <div className="absolute inset-0 bg-background/60 backdrop-blur-[1px] rounded flex items-center justify-center gap-1.5">
-                <Lock className="w-3.5 h-3.5 text-muted-foreground" />
-                <span className="text-xs font-medium text-muted-foreground">Pro</span>
+                <Lock className="w-3.5 h-3.5 text-amber-500" />
+                <span className="text-xs font-semibold uppercase text-amber-500">Pro</span>
               </div>
             </div>
           )}
@@ -290,7 +294,13 @@ export function MobilePlayerSheet({
                 <DropdownMenuItem onClick={downloadWithEffects}>
                   Download WAV
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={downloadAsMP3}>
+                <DropdownMenuItem onClick={() => {
+                  if (!isPro) {
+                    setUpgradeOpen(true)
+                    return
+                  }
+                  downloadAsMP3()
+                }}>
                   Download MP3
                 </DropdownMenuItem>
               </DropdownMenuContent>

@@ -10,18 +10,18 @@ function createAdminClient() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    { auth: { persistSession: false } }
+    { auth: { persistSession: false } },
   )
 }
 
 async function updateSubscriptionStatus(
   customerId: string,
   status: string,
-  subscriptionId?: string
+  subscriptionId?: string,
 ) {
   const supabase = createAdminClient()
 
-  await supabase
+  const { error, count } = await supabase
     .from('profiles')
     .update({
       subscription_status: status,
@@ -29,6 +29,14 @@ async function updateSubscriptionStatus(
       updated_at: new Date().toISOString(),
     })
     .eq('stripe_customer_id', customerId)
+
+  if (error) {
+    throw new Error(`Failed to update subscription status: ${error.message}`)
+  }
+
+  if (count === 0) {
+    console.warn(`No profile found for stripe_customer_id: ${customerId}`)
+  }
 }
 
 export async function POST(request: Request) {
@@ -46,7 +54,7 @@ export async function POST(request: Request) {
     event = stripe.webhooks.constructEvent(
       body,
       signature,
-      process.env.STRIPE_WEBHOOK_SECRET!
+      process.env.STRIPE_WEBHOOK_SECRET!,
     )
   } catch (error) {
     console.error('Webhook signature verification failed:', error)
@@ -57,11 +65,15 @@ export async function POST(request: Request) {
     switch (event.type) {
       case 'checkout.session.completed': {
         const session = event.data.object as Stripe.Checkout.Session
-        if (session.mode === 'subscription' && session.customer && session.subscription) {
+        if (
+          session.mode === 'subscription' &&
+          session.customer &&
+          session.subscription
+        ) {
           await updateSubscriptionStatus(
             session.customer as string,
             'active',
-            session.subscription as string
+            session.subscription as string,
           )
         }
         break
@@ -69,25 +81,49 @@ export async function POST(request: Request) {
 
       case 'customer.subscription.updated': {
         const subscription = event.data.object as Stripe.Subscription
-        const status = subscription.status === 'active' ? 'active'
-          : subscription.status === 'past_due' ? 'past_due'
-          : subscription.status === 'canceled' ? 'canceled'
-          : 'free'
+        const status =
+          subscription.status === 'active'
+            ? 'active'
+            : subscription.status === 'past_due'
+              ? 'past_due'
+              : subscription.status === 'canceled'
+                ? 'canceled'
+                : 'free'
 
         await updateSubscriptionStatus(
           subscription.customer as string,
           status,
-          subscription.id
+          subscription.id,
         )
         break
       }
 
       case 'customer.subscription.deleted': {
         const subscription = event.data.object as Stripe.Subscription
-        await updateSubscriptionStatus(
-          subscription.customer as string,
-          'free'
-        )
+        await updateSubscriptionStatus(subscription.customer as string, 'free')
+        break
+      }
+
+      case 'invoice.payment_failed': {
+        const invoice = event.data.object as Stripe.Invoice
+        if (invoice.customer) {
+          await updateSubscriptionStatus(invoice.customer as string, 'past_due')
+        }
+
+        break
+      }
+
+      case 'invoice.payment_succeeded': {
+        const invoice = event.data.object as Stripe.Invoice
+        const subscriptionId =
+          invoice.parent?.subscription_details?.subscription
+        if (invoice.customer && subscriptionId) {
+          await updateSubscriptionStatus(
+            invoice.customer as string,
+            'active',
+            subscriptionId as string,
+          )
+        }
         break
       }
 
@@ -97,7 +133,10 @@ export async function POST(request: Request) {
     }
   } catch (error) {
     console.error('Webhook handler error:', error)
-    return NextResponse.json({ error: 'Webhook handler failed' }, { status: 500 })
+    return NextResponse.json(
+      { error: 'Webhook handler failed' },
+      { status: 500 },
+    )
   }
 
   return NextResponse.json({ received: true })

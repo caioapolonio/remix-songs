@@ -13,6 +13,16 @@ export async function GET() {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('subscription_status')
+      .eq('id', user.id)
+      .single()
+
+    if (profile?.subscription_status !== 'active') {
+      return NextResponse.json([])
+    }
+
     const { data: presets, error } = await supabase
       .from('presets')
       .select('*')
@@ -62,7 +72,7 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json()
-    const { name, speed, reverb, bass } = body
+    const { name, speed, reverb, bass, volume } = body
 
     if (!name || typeof name !== 'string') {
       return NextResponse.json({ error: 'Name is required' }, { status: 400 })
@@ -89,6 +99,7 @@ export async function POST(request: Request) {
         speed: speed ?? 1,
         reverb: reverb ?? 0,
         bass_boost: bass ?? 0,
+        volume: volume ?? 1,
       })
       .select()
       .single()

@@ -29,21 +29,43 @@ MP3 encoding runs in a Web Worker (`workers/mp3-encoder.worker.ts`) using `@bree
 ### Route Structure
 
 - `/` - Landing page (public)
-- `/app` - Main player (protected, requires auth)
+- `/app` - Main player (accessible without auth — free tier explores, paywall on Pro features)
+- `/app/pro` - Upgrade/manage subscription page
 - `/pricing` - Pricing page (public)
 - `/(auth)/login`, `/(auth)/signup` - Auth pages
 - `/auth/confirm`, `/auth/callback`, `/auth/signout` - Supabase auth routes
 - `/api/checkout`, `/api/portal` - Stripe billing endpoints
 - `/api/webhooks/stripe` - Stripe webhook handler
+- `/api/verify-pro` - Server-side Pro status verification
+- `/api/presets` - CRUD for user presets (Pro gated on server)
 
 ### Auth & Billing
 
-- **Supabase** for auth. Middleware (`middleware.ts` -> `lib/supabase/middleware.ts`) refreshes sessions, protects `/app` routes, and redirects authenticated users away from auth pages.
+- **Supabase** for auth. Middleware (`middleware.ts` -> `lib/supabase/middleware.ts`) refreshes sessions and redirects authenticated users away from auth pages.
 - **Stripe** for subscriptions. Subscription status stored in Supabase `profiles` table, exposed via `SubscriptionProvider` context (`useSubscription()` hook, `isPro` flag).
+- A Supabase trigger (`on_auth_user_created`) auto-creates a `profiles` row on signup with `subscription_status = 'free'`.
+
+### Pro Feature Gating
+
+Five features are gated behind Pro subscription:
+
+| Feature        | Gate type                             |
+| -------------- | ------------------------------------- |
+| MP3 Download   | Server (`/api/verify-pro`) + UI modal |
+| Bass Boost     | UI disabled + lock icon               |
+| Batch Remixing | UI modal (max 1 file for free)        |
+| Custom Presets | Client + Server (POST returns 403)    |
+| Trim & Cut     | UI disabled + lock icon               |
+
+Gates live in `hooks/use-audio-player.ts`, `components/player/effect-controls.tsx`, `components/player/file-list.tsx`, `components/player/preset-selector.tsx`, and `components/player/waveform-display.tsx`.
 
 ### Player Components
 
 The player UI in `app/app/page.tsx` uses `createPortal` to teleport `WaveformDisplay` between desktop and mobile mount points. Mobile uses a drawer sheet (`MobilePlayerSheet`), desktop shows sidebar + waveform + controls.
+
+### Toasts
+
+Uses `sonner`. The `<Toaster>` is in `app/layout.tsx`. Import `toast` from `sonner` to show notifications.
 
 ### Environment Variables
 
@@ -61,4 +83,13 @@ NEXT_PUBLIC_APP_URL
 
 - Next.js 16 + React 19 + TypeScript (strict)
 - Tailwind CSS v4 + shadcn/ui (Radix primitives)
+- Sonner for toast notifications
 - Path alias: `@/*` maps to project root
+
+## Database (Supabase)
+
+Three tables in `public` schema, all with RLS enabled:
+
+- **profiles** - User subscription data (linked to `auth.users` via FK on `id`)
+- **presets** - Saved effect presets (FK to `profiles.id`, max 10 per user enforced server-side)
+- **user_defaults** - Per-user default effect settings (FK to `profiles.id`)

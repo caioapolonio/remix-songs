@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+
+Disallow: /api/
+Disallow: /auth/
+Disallow: /(auth)/
+
+Sitemap: https://remix-songs.vercel.app/sitemap.xml

@@ -2,8 +2,13 @@
 
 import { useEffect, useState } from 'react'
 import { useSubscription } from '@/components/subscription-provider'
-import { cn } from '@/lib/utils'
-import { SlidersHorizontal } from 'lucide-react'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 
 interface Preset {
   id: string
@@ -11,24 +16,29 @@ interface Preset {
   speed: number
   reverb: number
   bass: number
+  volume: number
 }
 
 interface PresetSelectorProps {
   speed: number
   reverb: number
   bass: number
+  volume: number
   setSpeed: (v: number) => void
   setReverb: (v: number) => void
   setBass: (v: number) => void
+  setVolume: (v: number) => void
 }
 
 export function PresetSelector({
   speed,
   reverb,
   bass,
+  volume,
   setSpeed,
   setReverb,
   setBass,
+  setVolume,
 }: PresetSelectorProps) {
   const { isPro } = useSubscription()
   const [presets, setPresets] = useState<Preset[]>([])
@@ -43,34 +53,40 @@ export function PresetSelector({
 
   if (!isPro || presets.length === 0) return null
 
-  const isActive = (p: Preset) =>
-    Number(p.speed) === speed &&
-    Number(p.reverb) === reverb &&
-    Number(p.bass) === bass
+  const findActive = () => {
+    const eps = 0.001
+    const near = (a: number, b: number) => Math.abs(a - b) < eps
+    const match = presets.find(
+      (p) =>
+        near(Number(p.speed), speed) &&
+        near(Number(p.reverb), reverb) &&
+        near(Number(p.bass), bass) &&
+        near(Number(p.volume), volume),
+    )
+    return match?.id ?? ''
+  }
 
-  const apply = (p: Preset) => {
-    setSpeed(Number(p.speed))
-    setReverb(Number(p.reverb))
-    setBass(Number(p.bass))
+  const apply = (presetId: string) => {
+    const preset = presets.find((p) => p.id === presetId)
+    if (!preset) return
+    setSpeed(Number(preset.speed))
+    setReverb(Number(preset.reverb))
+    setBass(Number(preset.bass))
+    setVolume(Number(preset.volume))
   }
 
   return (
-    <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
-      <SlidersHorizontal className="w-4 h-4 text-muted-foreground shrink-0" />
-      {presets.map((preset) => (
-        <button
-          key={preset.id}
-          onClick={() => apply(preset)}
-          className={cn(
-            'shrink-0 px-3 py-1 rounded-full text-xs font-medium transition-colors',
-            isActive(preset)
-              ? 'bg-primary text-primary-foreground'
-              : 'bg-accent text-accent-foreground hover:bg-accent/80',
-          )}
-        >
-          {preset.name}
-        </button>
-      ))}
-    </div>
+    <Select value={findActive()} onValueChange={apply}>
+      <SelectTrigger className="w-full">
+        <SelectValue placeholder="Select a preset" />
+      </SelectTrigger>
+      <SelectContent>
+        {presets.map((preset) => (
+          <SelectItem key={preset.id} value={preset.id}>
+            {preset.name}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   )
 }

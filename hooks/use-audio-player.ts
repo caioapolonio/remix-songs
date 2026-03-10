@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import WaveSurfer from 'wavesurfer.js';
 import * as Tone from 'tone';
 import { v4 as uuidv4 } from 'uuid';
+import { toast } from 'sonner';
 
 export type LoopMode = 'off' | 'all' | 'one';
 
@@ -92,6 +93,9 @@ export interface AudioPlayerState {
   isMuted: boolean;
   loopMode: LoopMode;
   isDownloading: boolean;
+  isCropping: boolean;
+  cropStart: number | null;
+  cropEnd: number | null;
 }
 
 export function useAudioPlayer() {
@@ -123,6 +127,9 @@ export function useAudioPlayer() {
     isMuted: false,
     loopMode: 'off',
     isDownloading: false,
+    isCropping: false,
+    cropStart: null,
+    cropEnd: null,
   });
 
   // Refs for state access inside callbacks
@@ -164,6 +171,10 @@ export function useAudioPlayer() {
 
   // Ref for seeking timeout cleanup (prevents memory leak)
   const seekingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const prevSpeedRef = useRef(state.speed);
+
+  // Guard to prevent reentrant handleTrackEnd calls from sync loop
+  const isHandlingTrackEndRef = useRef(false);
 
   // Generation counter to abort stale concurrent playFile calls
   const loadGenRef = useRef(0);
@@ -195,20 +206,28 @@ export function useAudioPlayer() {
       const player = playerRef.current;
       if (!player || !player.loaded) return;
 
+      // Clamp seek to crop bounds when crop is active
+      const { isCropping, cropStart, cropEnd } = stateRef.current;
+      let seekTime = newTime;
+      if (isCropping && cropStart != null && cropEnd != null) {
+        if (seekTime < cropStart) seekTime = cropStart;
+        if (seekTime >= cropEnd) seekTime = cropStart;
+      }
+
       isSeekingRef.current = true;
       if (seekingTimeoutRef.current) {
         clearTimeout(seekingTimeoutRef.current);
       }
 
-      timeRef.current.pausedAt = newTime;
+      timeRef.current.pausedAt = seekTime;
       timeRef.current.startedAt = Date.now();
 
       if (player.state === 'started') {
         player.stop();
-        player.start(undefined, newTime);
-        setState(prev => ({ ...prev, currentTime: newTime }));
+        player.start(undefined, seekTime);
+        setState(prev => ({ ...prev, currentTime: seekTime }));
       } else {
-        setState(prev => ({ ...prev, currentTime: newTime }));
+        setState(prev => ({ ...prev, currentTime: seekTime }));
       }
 
       seekingTimeoutRef.current = setTimeout(() => {
@@ -225,43 +244,51 @@ export function useAudioPlayer() {
     if (initializationPromiseRef.current) return initializationPromiseRef.current;
     
     initializationPromiseRef.current = (async () => {
-        // Reverb (Single instance reused)
-        const reverb = new Tone.Reverb({
-        decay: 4,
-        wet: 0,
-        }).toDestination();
+        try {
+          // Reverb (Single instance reused)
+          const reverb = new Tone.Reverb({
+          decay: 4,
+          wet: 0,
+          }).toDestination();
 
-        // Non-blocking: iOS requires AudioContext to be unlocked in the user gesture call stack.
-        // Awaiting reverb.generate() here breaks that chain. Fire-and-forget instead.
-        reverb.generate().catch(e => console.warn("Reverb generation failed", e));
+          // Non-blocking: iOS requires AudioContext to be unlocked in the user gesture call stack.
+          // Awaiting reverb.generate() here breaks that chain. Fire-and-forget instead.
+          reverb.generate().catch(e => console.warn("Reverb generation failed", e));
 
-        reverbRef.current = reverb;
+          reverbRef.current = reverb;
 
-        // BiquadFilter lowshelf for bass boost (clean, no phase artifacts)
-        const bassBoost = new Tone.BiquadFilter({
-          frequency: 150,
-          type: "lowshelf",
-          gain: 0,
-        }).connect(reverb);
-        bassBoostRef.current = bassBoost;
+          // BiquadFilter lowshelf for bass boost (clean, no phase artifacts)
+          const bassBoost = new Tone.BiquadFilter({
+            frequency: 150,
+            type: "lowshelf",
+            gain: 0,
+          }).connect(reverb);
+          bassBoostRef.current = bassBoost;
 
-        // Player (Single instance reused)
-        const player = new Tone.Player().connect(bassBoost);
-        playerRef.current = player;
-        
-        // Apply current state values to the new player
-        player.playbackRate = stateRef.current.speed;
-        player.volume.value = stateRef.current.isMuted ? -Infinity : Tone.gainToDb(stateRef.current.volume);
+          // Player (Single instance reused)
+          const player = new Tone.Player().connect(bassBoost);
+          playerRef.current = player;
 
-        // Handle track end (when audio finishes playing naturally)
-        player.onstop = () => {
-            if (stateRef.current.isPlaying && !isSeekingRef.current) {
-                handleTrackEndRef.current?.();
-            }
-        };
+          // Apply current state values to the new player
+          player.playbackRate = stateRef.current.speed;
+          player.volume.value = stateRef.current.isMuted ? -Infinity : Tone.gainToDb(stateRef.current.volume);
 
-        isInitializedRef.current = true;
-        initializationPromiseRef.current = null;
+          // Handle track end (when audio finishes playing naturally)
+          player.onstop = () => {
+              // When cropping is active, the sync loop is the sole authority for
+              // detecting crop-end and triggering handleTrackEnd.  The stop()+start()
+              // restart inside handleTrackEnd fires onstop asynchronously, which was
+              // slipping past the isHandling guard and causing rapid-fire restarts.
+              if (stateRef.current.isPlaying && !isSeekingRef.current && !isHandlingTrackEndRef.current && !stateRef.current.isCropping) {
+                  handleTrackEndRef.current?.();
+              }
+          };
+
+          isInitializedRef.current = true;
+        } finally {
+          // Always clear so a failed init can be retried
+          initializationPromiseRef.current = null;
+        }
     })();
 
     return initializationPromiseRef.current;
@@ -362,6 +389,9 @@ export function useAudioPlayer() {
       bass: settings.bass,
       volume: settings.volume,
       isMuted: settings.isMuted,
+      isCropping: false,
+      cropStart: null,
+      cropEnd: null,
     }));
 
     try {
@@ -412,11 +442,18 @@ export function useAudioPlayer() {
         const now = Date.now();
         const elapsed = (now - timeRef.current.startedAt) / 1000;
         const playedTime = timeRef.current.pausedAt + (elapsed * timeRef.current.speed);
-        
-        if (playedTime < duration) {
+
+        const { isCropping, cropEnd } = stateRef.current;
+        const effectiveEnd = (isCropping && cropEnd != null) ? cropEnd : duration;
+
+        if (playedTime < effectiveEnd) {
             // Update Visuals
             ws.setTime(playedTime);
             setState(prev => ({ ...prev, currentTime: playedTime }));
+        } else if (isCropping && cropEnd != null && !isHandlingTrackEndRef.current) {
+            // Crop end reached — trigger track end handling (guard prevents reentrant calls)
+            isHandlingTrackEndRef.current = true;
+            handleTrackEndRef.current?.();
         } else {
             // End of track handling in onstop callback, but visual clamp here
             ws.setTime(duration);
@@ -434,20 +471,23 @@ export function useAudioPlayer() {
   // Speed
   useEffect(() => {
     if (playerRef.current) {
+        if (prevSpeedRef.current === state.speed) return;
+
         // When changing speed, we need to "commit" the current time to pausedAt
         // and reset startedAt, otherwise the math breaks (it would apply new speed to entire duration)
-        
+
         if (state.isPlaying) {
             const now = Date.now();
             const elapsed = (now - timeRef.current.startedAt) / 1000;
             timeRef.current.pausedAt += elapsed * timeRef.current.speed; // Commit time with OLD speed
             timeRef.current.startedAt = now; // Reset start time
         }
-        
+
+        prevSpeedRef.current = state.speed;
         timeRef.current.speed = state.speed;
         playerRef.current.playbackRate = state.speed;
     }
-  }, [state.speed, state.isPlaying]); // Added isPlaying dependency to ensure logic holds
+  }, [state.speed]);
 
   // Reverb
   useEffect(() => {
@@ -478,40 +518,75 @@ export function useAudioPlayer() {
   // manually in handleTrackEnd for consistent behavior.
   
   const handleTrackEnd = useCallback(() => {
-      const { loopMode } = stateRef.current;
+      const { loopMode, isCropping, cropStart, cropEnd } = stateRef.current;
       const currentId = currentFileIdRef.current;
       const fileList = filesRef.current;
-      
+
+      const restartOffset = (isCropping && cropStart != null) ? cropStart : 0;
+
       // Reset time for next track or loop
-      timeRef.current = { startedAt: 0, pausedAt: 0, speed: stateRef.current.speed };
-      
+      timeRef.current = { startedAt: 0, pausedAt: restartOffset, speed: stateRef.current.speed };
+
       if (!currentId) return;
 
+      // Stop the player first when crop end is reached (sync loop triggers this).
+      // IMPORTANT: onstop fires ASYNC in Tone.js, so we keep isSeekingRef=true
+      // until after restart to block the delayed onstop callback.
+      if (isCropping && playerRef.current?.state === 'started') {
+        isSeekingRef.current = true;
+        playerRef.current.stop();
+        // Do NOT reset isSeekingRef here — reset after restart below
+      }
+
       if (loopMode === 'one') {
-          // Restart the same track from the beginning
-          timeRef.current.pausedAt = 0;
+          // Restart the same track from cropStart (or 0)
+          timeRef.current.pausedAt = restartOffset;
           timeRef.current.startedAt = Date.now();
-          wavesurferRef.current?.setTime(0);
-          setState(prev => ({ ...prev, currentTime: 0 }));
-          playerRef.current?.start();
+          wavesurferRef.current?.setTime(restartOffset);
+          setState(prev => ({ ...prev, currentTime: restartOffset }));
+          playerRef.current?.start(undefined, restartOffset);
+          // Reset guards after async onstop from stop() has been absorbed
+          setTimeout(() => {
+            isSeekingRef.current = false;
+            isHandlingTrackEndRef.current = false;
+          }, 200);
       } else if (loopMode === 'all') {
         // Guard against empty file list (division by zero)
         if (fileList.length === 0) return;
         const currentIndex = fileList.findIndex(f => f.id === currentId);
         if (currentIndex === -1) return;
-        const nextIndex = (currentIndex + 1) % fileList.length;
-        playFile(fileList[nextIndex].id);
+        if (fileList.length === 1) {
+          // Single file: restart like loop-one (preserves crop state)
+          timeRef.current.pausedAt = restartOffset;
+          timeRef.current.startedAt = Date.now();
+          wavesurferRef.current?.setTime(restartOffset);
+          setState(prev => ({ ...prev, currentTime: restartOffset }));
+          playerRef.current?.start(undefined, restartOffset);
+          setTimeout(() => {
+            isSeekingRef.current = false;
+            isHandlingTrackEndRef.current = false;
+          }, 200);
+        } else {
+          const nextIndex = (currentIndex + 1) % fileList.length;
+          isHandlingTrackEndRef.current = false;
+          setTimeout(() => { isSeekingRef.current = false; }, 100);
+          playFile(fileList[nextIndex].id);
+        }
       } else {
         const currentIndex = fileList.findIndex(f => f.id === currentId);
         if (currentIndex === -1) return;
         if (currentIndex < fileList.length - 1) {
+          isHandlingTrackEndRef.current = false;
+          setTimeout(() => { isSeekingRef.current = false; }, 100);
           playFile(fileList[currentIndex + 1].id);
         } else {
             // Prevent onstop from calling handleTrackEnd again
             isSeekingRef.current = true;
             playerRef.current?.stop();
             setState(prev => ({ ...prev, isPlaying: false }));
-            isSeekingRef.current = false;
+            // Reset after async onstop has fired
+            setTimeout(() => { isSeekingRef.current = false; }, 100);
+            isHandlingTrackEndRef.current = false;
         }
       }
   }, [playFile]);
@@ -595,9 +670,19 @@ export function useAudioPlayer() {
         setState(prev => ({ ...prev, isPlaying: false }));
     } else {
         // Play Logic (Resume)
-        const offset = timeRef.current.pausedAt;
+        let offset = timeRef.current.pausedAt;
+
+        // If crop is active and offset is outside crop bounds, start from cropStart
+        const { isCropping, cropStart, cropEnd } = stateRef.current;
+        if (isCropping && cropStart != null && cropEnd != null) {
+          if (offset < cropStart || offset >= cropEnd) {
+            offset = cropStart;
+            timeRef.current.pausedAt = offset;
+          }
+        }
+
         playerRef.current.start(undefined, offset);
-        
+
         timeRef.current.startedAt = Date.now();
         setState(prev => ({ ...prev, isPlaying: true }));
     }
@@ -642,6 +727,40 @@ export function useAudioPlayer() {
     setState(prev => ({ ...prev, isMuted: !prev.isMuted }));
     updateFileSettings(currentFileIdRef.current, { isMuted: !stateRef.current.isMuted });
   };
+  const toggleCrop = useCallback(() => {
+    const { isCropping, duration } = stateRef.current;
+    if (isCropping) {
+      setState(prev => ({ ...prev, isCropping: false, cropStart: null, cropEnd: null }));
+    } else {
+      const start = 0;
+      const end = duration;
+      setState(prev => ({ ...prev, isCropping: true, cropStart: start, cropEnd: end }));
+    }
+  }, []);
+
+  const setCropRegion = useCallback((start: number, end: number) => {
+    setState(prev => ({ ...prev, cropStart: start, cropEnd: end }));
+
+    // Restart playback from the new crop start
+    const player = playerRef.current;
+    if (player && player.loaded) {
+      isSeekingRef.current = true;
+      if (seekingTimeoutRef.current) {
+        clearTimeout(seekingTimeoutRef.current);
+      }
+      if (player.state === 'started') {
+        player.stop();
+      }
+      timeRef.current.pausedAt = start;
+      timeRef.current.startedAt = Date.now();
+      player.start(undefined, start);
+      setState(prev => ({ ...prev, isPlaying: true }));
+      seekingTimeoutRef.current = setTimeout(() => {
+        isSeekingRef.current = false;
+      }, 200);
+    }
+  }, []);
+
   const cycleLoopMode = () => setState(prev => {
     const modes: LoopMode[] = ['off', 'all', 'one'];
     const nextIndex = (modes.indexOf(prev.loopMode) + 1) % modes.length;
@@ -723,16 +842,35 @@ export function useAudioPlayer() {
   }, []);
 
   const downloadWithFormat = useCallback(async (format: 'wav' | 'mp3') => {
+    // Server-side Pro verification for MP3 downloads
+    if (format === 'mp3') {
+      try {
+        const res = await fetch('/api/verify-pro')
+        const { isPro } = await res.json()
+        if (!isPro) {
+          toast.error('MP3 download is a Pro feature. Please upgrade to continue.')
+          return
+        }
+      } catch {
+        toast.error('Could not verify subscription. Please try again.')
+        return
+      }
+    }
+
     const audioBuffer = playerRef.current?.buffer?.get()
     if (!audioBuffer) return
 
-    const { speed, reverb: wet, bass } = stateRef.current
+    const { speed, reverb: wet, bass, isCropping, cropStart, cropEnd } = stateRef.current
     const currentFile = filesRef.current.find(f => f.id === currentFileIdRef.current)
     const baseName = currentFile?.name.replace(/\.[^/.]+$/, '') ?? 'remix'
 
+    const srcOffset = (isCropping && cropStart != null) ? cropStart : 0
+    const srcEnd = (isCropping && cropEnd != null) ? cropEnd : audioBuffer.duration
+    const srcDuration = srcEnd - srcOffset
+
     setState(prev => ({ ...prev, isDownloading: true }))
     try {
-      const outputDuration = audioBuffer.duration / speed
+      const outputDuration = srcDuration / speed
       const tail = wet > 0 ? 4 : 0 // Extra time for reverb tail
 
       // Use Tone.Offline to render with the same effects as preview
@@ -769,8 +907,8 @@ export function useAudioPlayer() {
 
         lastNode.toDestination()
 
-        // Start playback
-        offlinePlayer.start(0)
+        // Start playback (with crop offset if active)
+        offlinePlayer.start(0, srcOffset, srcDuration)
 
         // Schedule cleanup before render ends to prevent memory leaks
         const cleanupTime = Math.max(0, outputDuration + tail - 0.1)
@@ -794,7 +932,7 @@ export function useAudioPlayer() {
       document.body.removeChild(a); URL.revokeObjectURL(url)
     } catch (error) {
       console.error('Download failed:', error)
-      alert('Falha ao processar o áudio. Tente novamente.')
+      toast.error('Failed to process audio. Please try again.')
     } finally {
       setState(prev => ({ ...prev, isDownloading: false }))
     }
@@ -805,6 +943,7 @@ export function useAudioPlayer() {
 
   return {
     containerRef,
+    wavesurferRef,
     state,
     files,
     currentFileId,
@@ -821,6 +960,8 @@ export function useAudioPlayer() {
     setVolume,
     toggleMute,
     cycleLoopMode,
+    toggleCrop,
+    setCropRegion,
     downloadWithEffects,
     downloadAsMP3,
   };

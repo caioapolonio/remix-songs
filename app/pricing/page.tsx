@@ -18,7 +18,6 @@ const proFeatures = [
   'Create multiple remixes at once',
   'Save custom presets',
   'Trim remix start and end',
-  'Set custom default settings',
 ]
 
 export default function PricingPage() {
@@ -57,7 +56,7 @@ export default function PricingPage() {
               ))}
             </ul>
             <Button variant="outline" className="mt-8" asChild>
-              <Link href="/signup">Get started</Link>
+              <Link href="/app">Get started</Link>
             </Button>
           </div>
 

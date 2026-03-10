@@ -11,6 +11,7 @@ import {
   Loader2,
   ListX,
   ChevronDown,
+  Menu,
 } from 'lucide-react'
 import {
   DropdownMenu,
@@ -19,6 +20,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { cn } from '@/lib/utils'
+import { MobileSidebar } from '@/components/app-sidebar'
 
 interface FileListProps {
   player: ReturnType<typeof useAudioPlayer>
@@ -27,6 +29,7 @@ interface FileListProps {
 export function FileList({ player }: FileListProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [upgradeOpen, setUpgradeOpen] = useState(false)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const { isPro } = useSubscription()
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -56,7 +59,15 @@ export function FileList({ player }: FileListProps) {
     <div className="flex flex-col flex-1 min-h-0 md:flex-none md:h-full bg-card border-r w-full md:w-1/3 md:max-w-2xl md:min-w-106">
       <div className="p-4 border-b flex justify-between items-center">
         <h2 className="text-lg font-semibold flex items-center gap-2">
-          <Music className="w-5 h-5" />
+          <Button
+            variant="ghost"
+            size="icon"
+            className="md:hidden -ml-1 h-7 w-7"
+            onClick={() => setSidebarOpen(true)}
+          >
+            <Menu className="w-5 h-5" />
+          </Button>
+          <Music className="w-5 h-5 hidden md:block" />
           Library
         </h2>
         <div className="flex items-center gap-2">
@@ -207,6 +218,7 @@ export function FileList({ player }: FileListProps) {
           </div>
         )}
       </div>
+      <MobileSidebar open={sidebarOpen} onOpenChange={setSidebarOpen} />
       <UpgradeModal open={upgradeOpen} onOpenChange={setUpgradeOpen} />
     </div>
   )

@@ -20,6 +20,7 @@ import {
   Gauge,
   Sparkles,
   AudioLines,
+  Volume2,
   SlidersHorizontal,
   Loader2,
   Check,
@@ -31,6 +32,7 @@ interface Preset {
   speed: number
   reverb: number
   bass: number
+  volume: number
   created_at: string
 }
 
@@ -40,7 +42,6 @@ const proFeatures = [
   'Bass boost effect',
   'Create multiple remixes at once',
   'Trim remix start and end',
-  'Set custom default settings',
 ]
 
 function Paywall({ isAuthenticated }: { isAuthenticated: boolean }) {
@@ -107,6 +108,7 @@ function CreatePresetDialog({
   const [speed, setSpeed] = useState(1)
   const [reverb, setReverb] = useState(0)
   const [bass, setBass] = useState(0)
+  const [volume, setVolume] = useState(1)
   const [saving, setSaving] = useState(false)
 
   const reset = () => {
@@ -114,6 +116,7 @@ function CreatePresetDialog({
     setSpeed(1)
     setReverb(0)
     setBass(0)
+    setVolume(1)
   }
 
   const handleSave = async () => {
@@ -123,7 +126,7 @@ function CreatePresetDialog({
       const res = await fetch('/api/presets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name.trim(), speed, reverb, bass }),
+        body: JSON.stringify({ name: name.trim(), speed, reverb, bass, volume }),
       })
       if (!res.ok) throw new Error()
       const preset = await res.json()
@@ -234,6 +237,31 @@ function CreatePresetDialog({
               <span>0 dB</span>
               <span>6</span>
               <span>12</span>
+            </div>
+          </div>
+
+          {/* Volume */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Volume2 className="w-4 h-4 text-blue-500" />
+                <label className="text-sm font-medium">Volume</label>
+              </div>
+              <span className="text-sm text-muted-foreground font-mono bg-accent px-2 py-0.5 rounded">
+                {(volume * 100).toFixed(0)}%
+              </span>
+            </div>
+            <Slider
+              value={[volume]}
+              min={0}
+              max={1}
+              step={0.01}
+              onValueChange={([val]) => setVolume(val)}
+            />
+            <div className="flex justify-between text-xs text-muted-foreground">
+              <span>0%</span>
+              <span>50%</span>
+              <span>100%</span>
             </div>
           </div>
         </div>
@@ -364,6 +392,10 @@ export default function PresetsPage() {
                 <span className="flex items-center gap-1">
                   <AudioLines className="w-3.5 h-3.5" />
                   {Number(preset.bass).toFixed(1)} dB
+                </span>
+                <span className="flex items-center gap-1">
+                  <Volume2 className="w-3.5 h-3.5" />
+                  {(Number(preset.volume) * 100).toFixed(0)}%
                 </span>
               </div>
             </div>

@@ -13,7 +13,7 @@ interface EffectControlsProps {
 }
 
 export function EffectControls({ player }: EffectControlsProps) {
-  const { state, setSpeed, setReverb, setBass } = player
+  const { state, setSpeed, setReverb, setBass, setVolume } = player
   const { isPro } = useSubscription()
   const [upgradeOpen, setUpgradeOpen] = useState(false)
 
@@ -23,9 +23,11 @@ export function EffectControls({ player }: EffectControlsProps) {
         speed={state.speed}
         reverb={state.reverb}
         bass={state.bass}
+        volume={state.volume}
         setSpeed={setSpeed}
         setReverb={setReverb}
         setBass={setBass}
+        setVolume={setVolume}
       />
 
       {/* Speed Control */}
@@ -120,8 +122,8 @@ export function EffectControls({ player }: EffectControlsProps) {
               className="py-2"
             />
             <div className="absolute inset-0 bg-background/60 backdrop-blur-[1px] rounded flex items-center justify-center gap-1.5">
-              <Lock className="w-3.5 h-3.5 text-muted-foreground" />
-              <span className="text-xs font-medium text-muted-foreground">Pro</span>
+              <Lock className="w-3.5 h-3.5 text-amber-500" />
+              <span className="text-xs font-semibold uppercase text-amber-500">Pro</span>
             </div>
           </div>
         )}
