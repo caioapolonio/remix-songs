@@ -7,7 +7,7 @@ function createAdminClient() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    { auth: { persistSession: false } }
+    { auth: { persistSession: false } },
   )
 }
 
@@ -34,7 +34,7 @@ export async function POST() {
     if (profile?.subscription_status === 'active') {
       return NextResponse.json(
         { error: 'You already have an active subscription' },
-        { status: 400 }
+        { status: 400 },
       )
     }
 
@@ -58,7 +58,7 @@ export async function POST() {
         console.error('Failed to save stripe_customer_id:', updateError)
         return NextResponse.json(
           { error: 'Failed to set up billing. Please try again.' },
-          { status: 500 }
+          { status: 500 },
         )
       }
 
@@ -75,7 +75,7 @@ export async function POST() {
         if (!customerId) {
           return NextResponse.json(
             { error: 'Failed to set up billing. Please try again.' },
-            { status: 500 }
+            { status: 500 },
           )
         }
       }
@@ -92,7 +92,7 @@ export async function POST() {
         },
       ],
       success_url: `${process.env.NEXT_PUBLIC_APP_URL}/app?checkout=success`,
-      cancel_url: `${process.env.NEXT_PUBLIC_APP_URL}/pricing?checkout=canceled`,
+      cancel_url: `${process.env.NEXT_PUBLIC_APP_URL}/app?checkout=canceled`,
     })
 
     return NextResponse.json({ url: session.url })
@@ -100,7 +100,7 @@ export async function POST() {
     console.error('Checkout error:', error)
     return NextResponse.json(
       { error: 'Failed to create checkout session' },
-      { status: 500 }
+      { status: 500 },
     )
   }
 }

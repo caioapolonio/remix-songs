@@ -22,6 +22,27 @@ const defaultFileSettings: FileSettings = {
   isMuted: false,
 };
 
+function normalizeBuffer(buffer: AudioBuffer): AudioBuffer {
+  let peak = 0
+  for (let c = 0; c < buffer.numberOfChannels; c++) {
+    const data = buffer.getChannelData(c)
+    for (let i = 0; i < data.length; i++) {
+      const abs = Math.abs(data[i])
+      if (abs > peak) peak = abs
+    }
+  }
+  if (peak > 1) {
+    const gain = 1 / peak
+    for (let c = 0; c < buffer.numberOfChannels; c++) {
+      const data = buffer.getChannelData(c)
+      for (let i = 0; i < data.length; i++) {
+        data[i] *= gain
+      }
+    }
+  }
+  return buffer
+}
+
 function encodeWAV(buffer: AudioBuffer): Blob {
   const numCh = buffer.numberOfChannels
   const sr = buffer.sampleRate
@@ -919,10 +940,10 @@ export function useAudioPlayer() {
         }, cleanupTime)
       }, outputDuration + tail, audioBuffer.numberOfChannels, audioBuffer.sampleRate)
 
-      // Convert ToneAudioBuffer to native AudioBuffer
-      const nativeBuffer = rendered.get() as AudioBuffer
-      const blob = format === 'mp3' 
-        ? await encodeMP3(nativeBuffer) 
+      // Convert ToneAudioBuffer to native AudioBuffer and normalize to prevent clipping
+      const nativeBuffer = normalizeBuffer(rendered.get() as AudioBuffer)
+      const blob = format === 'mp3'
+        ? await encodeMP3(nativeBuffer)
         : encodeWAV(nativeBuffer)
       const ext = format === 'mp3' ? 'mp3' : 'wav'
       const url = URL.createObjectURL(blob)
