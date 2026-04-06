@@ -1,6 +1,8 @@
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
 import { SiteHeader } from '@/components/site-header'
+import { SiteFooter } from '@/components/site-footer'
+import { SoundWave } from '@/components/sound-wave'
 import {
   Zap,
   Download,
@@ -57,6 +59,7 @@ export default function LandingPage() {
             Upload your music, apply effects in real-time, and download your
             remixes. No software to install — everything runs in your browser.
           </p>
+          <SoundWave />
         </div>
         <div className="flex gap-3">
           <Button size="lg" asChild>
@@ -96,12 +99,7 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* Footer */}
-      <footer className="border-t px-4 py-8">
-        <div className="mx-auto max-w-5xl text-center text-sm text-muted-foreground">
-          &copy; {new Date().getFullYear()} Remix Songs. All rights reserved.
-        </div>
-      </footer>
+      <SiteFooter />
     </div>
   )
 }

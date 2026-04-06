@@ -116,6 +116,11 @@
   --sidebar-ring: oklch(0.556 0 0);
 }
 
+@keyframes sound-wave {
+  0%, 100% { transform: scaleY(0.3); }
+  50% { transform: scaleY(1); }
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
