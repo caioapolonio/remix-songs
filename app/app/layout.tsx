@@ -1,4 +1,7 @@
-import { createClient } from '@/lib/supabase/server'
+import { eq } from 'drizzle-orm'
+import { getServerSession } from '@/lib/auth'
+import { db } from '@/lib/db'
+import { profiles } from '@/lib/db/schema'
 import {
   SubscriptionProvider,
   type SubscriptionStatus,
@@ -10,13 +13,9 @@ export default async function AppLayout({
 }: {
   children: React.ReactNode
 }) {
-  const supabase = await createClient()
+  const session = await getServerSession()
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-
-  if (!user) {
+  if (!session) {
     return (
       <SubscriptionProvider status="free" email={null} isAuthenticated={false}>
         <div className="flex h-dvh bg-background text-foreground overflow-hidden">
@@ -29,15 +28,15 @@ export default async function AppLayout({
     )
   }
 
-  // Fetch subscription status from profiles table
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('subscription_status, email')
-    .eq('id', user.id)
-    .single()
+  const [profile] = await db
+    .select({ subscriptionStatus: profiles.subscriptionStatus })
+    .from(profiles)
+    .where(eq(profiles.id, session.user.id))
+    .limit(1)
 
-  const status: SubscriptionStatus = (profile?.subscription_status as SubscriptionStatus) ?? 'free'
-  const email = profile?.email ?? user.email ?? null
+  const status: SubscriptionStatus =
+    (profile?.subscriptionStatus as SubscriptionStatus) ?? 'free'
+  const email = session.user.email ?? null
 
   return (
     <SubscriptionProvider status={status} email={email} isAuthenticated={true}>

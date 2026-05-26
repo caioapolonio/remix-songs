@@ -2,25 +2,32 @@
 
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
-import { createClient } from '@/lib/supabase/server'
+import { headers } from 'next/headers'
+import { APIError } from 'better-auth/api'
+import { auth } from '@/lib/auth'
 
 export async function signup(formData: FormData) {
-  const supabase = await createClient()
+  const email = formData.get('email') as string
+  const password = formData.get('password') as string
+  // better-auth exige `name` no signup; derivamos do email se não houver campo.
+  const name = (formData.get('name') as string | null) ?? email.split('@')[0]
 
-  const data = {
-    email: formData.get('email') as string,
-    password: formData.get('password') as string,
-  }
-
-  const { data: signUpData, error } = await supabase.auth.signUp(data)
-
-  if (error) {
-    redirect('/signup?error=' + encodeURIComponent(error.message))
-  }
-
-  // Supabase returns empty identities when email already registered
-  if (signUpData.user?.identities?.length === 0) {
-    redirect('/signup?error=' + encodeURIComponent('An account with this email already exists. Try logging in.'))
+  try {
+    await auth.api.signUpEmail({
+      body: { email, password, name },
+      headers: await headers(),
+    })
+  } catch (error) {
+    let message = 'Could not create account. Please try again.'
+    if (error instanceof APIError) {
+      // Email já cadastrado retorna 422 (USER_ALREADY_EXISTS)
+      if (error.status === 422 || /already exists/i.test(error.message)) {
+        message = 'An account with this email already exists. Try logging in.'
+      } else {
+        message = error.message
+      }
+    }
+    redirect('/signup?error=' + encodeURIComponent(message))
   }
 
   revalidatePath('/', 'layout')

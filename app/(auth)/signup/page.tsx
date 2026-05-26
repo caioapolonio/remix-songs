@@ -1,4 +1,6 @@
 import Link from 'next/link'
+import { redirect } from 'next/navigation'
+import { getServerSession } from '@/lib/auth'
 import { signup } from './actions'
 import { SignupForm } from './signup-form'
 
@@ -7,6 +9,13 @@ export default async function SignupPage({
 }: {
   searchParams: Promise<{ error?: string; success?: string }>
 }) {
+  // Valida a sessão no banco (não só o cookie). Cookie órfão → sessão null
+  // → renderiza o signup normalmente, sem prender o usuário.
+  const session = await getServerSession()
+  if (session) {
+    redirect('/app')
+  }
+
   const { error, success } = await searchParams
 
   return (

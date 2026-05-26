@@ -1,43 +1,52 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { randomUUID } from 'crypto'
+import { and, eq, count as drizzleCount } from 'drizzle-orm'
+import { getServerSession } from '@/lib/auth'
+import { db } from '@/lib/db'
+import { presets, profiles } from '@/lib/db/schema'
+
+// O front espera o campo `bass` (não `bass_boost`). Mapeia a row do banco.
+function toClient(p: typeof presets.$inferSelect) {
+  return {
+    id: p.id,
+    user_id: p.userId,
+    name: p.name,
+    speed: p.speed,
+    reverb: p.reverb,
+    bass: p.bassBoost,
+    volume: p.volume,
+    created_at: p.createdAt,
+  }
+}
+
+async function isPro(userId: string): Promise<boolean> {
+  const [profile] = await db
+    .select({ subscriptionStatus: profiles.subscriptionStatus })
+    .from(profiles)
+    .where(eq(profiles.id, userId))
+    .limit(1)
+  return profile?.subscriptionStatus === 'active'
+}
 
 export async function GET() {
   try {
-    const supabase = await createClient()
+    const session = await getServerSession()
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-
-    if (!user) {
+    if (!session) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('subscription_status')
-      .eq('id', user.id)
-      .single()
-
-    if (profile?.subscription_status !== 'active') {
+    if (!(await isPro(session.user.id))) {
       return NextResponse.json([])
     }
 
-    const { data: presets, error } = await supabase
-      .from('presets')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('created_at')
+    const rows = await db
+      .select()
+      .from(presets)
+      .where(eq(presets.userId, session.user.id))
+      .orderBy(presets.createdAt)
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
-
-    const mapped = presets.map((p: Record<string, unknown>) => ({
-      ...p,
-      bass: p.bass_boost,
-    }))
-    return NextResponse.json(mapped)
+    return NextResponse.json(rows.map(toClient))
   } catch {
     return NextResponse.json(
       { error: 'Failed to fetch presets' },
@@ -48,23 +57,13 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
-    const supabase = await createClient()
+    const session = await getServerSession()
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-
-    if (!user) {
+    if (!session) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('subscription_status')
-      .eq('id', user.id)
-      .single()
-
-    if (profile?.subscription_status !== 'active') {
+    if (!(await isPro(session.user.id))) {
       return NextResponse.json(
         { error: 'Pro subscription required' },
         { status: 403 }
@@ -82,34 +81,29 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Name must be 32 characters or less' }, { status: 400 })
     }
 
-    const { count } = await supabase
-      .from('presets')
-      .select('*', { count: 'exact', head: true })
-      .eq('user_id', user.id)
+    const [{ value: existing }] = await db
+      .select({ value: drizzleCount() })
+      .from(presets)
+      .where(eq(presets.userId, session.user.id))
 
-    if (count !== null && count >= 10) {
+    if (existing >= 10) {
       return NextResponse.json({ error: 'Maximum of 10 presets reached' }, { status: 400 })
     }
 
-    const { data: preset, error } = await supabase
-      .from('presets')
-      .insert({
-        user_id: user.id,
+    const [preset] = await db
+      .insert(presets)
+      .values({
+        id: randomUUID(),
+        userId: session.user.id,
         name: name.trim(),
         speed: speed ?? 1,
         reverb: reverb ?? 0,
-        bass_boost: bass ?? 0,
+        bassBoost: bass ?? 0,
         volume: volume ?? 1,
       })
-      .select()
-      .single()
+      .returning()
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
-
-    const mapped = { ...preset, bass: (preset as Record<string, unknown>).bass_boost }
-    return NextResponse.json(mapped, { status: 201 })
+    return NextResponse.json(toClient(preset), { status: 201 })
   } catch {
     return NextResponse.json(
       { error: 'Failed to create preset' },
@@ -120,13 +114,9 @@ export async function POST(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
-    const supabase = await createClient()
+    const session = await getServerSession()
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-
-    if (!user) {
+    if (!session) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
@@ -137,15 +127,9 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: 'ID is required' }, { status: 400 })
     }
 
-    const { error } = await supabase
-      .from('presets')
-      .delete()
-      .eq('id', id)
-      .eq('user_id', user.id)
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
+    await db
+      .delete(presets)
+      .where(and(eq(presets.id, id), eq(presets.userId, session.user.id)))
 
     return NextResponse.json({ success: true })
   } catch {

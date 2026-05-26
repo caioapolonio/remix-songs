@@ -1,77 +1,56 @@
 import { NextResponse } from 'next/server'
-import { createClient as createUserClient } from '@/lib/supabase/server'
-import { createClient } from '@supabase/supabase-js'
+import { eq } from 'drizzle-orm'
+import { getServerSession } from '@/lib/auth'
+import { db } from '@/lib/db'
+import { profiles } from '@/lib/db/schema'
 import { getStripe } from '@/lib/stripe'
-
-function createAdminClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    { auth: { persistSession: false } },
-  )
-}
 
 export async function POST() {
   try {
-    const supabase = await createUserClient()
+    const session = await getServerSession()
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-
-    if (!user) {
+    if (!session) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    // Get or create Stripe customer
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('stripe_customer_id, subscription_status')
-      .eq('id', user.id)
-      .single()
+    const userId = session.user.id
+
+    const [profile] = await db
+      .select({
+        stripeCustomerId: profiles.stripeCustomerId,
+        subscriptionStatus: profiles.subscriptionStatus,
+      })
+      .from(profiles)
+      .where(eq(profiles.id, userId))
+      .limit(1)
 
     // Block already-active subscribers from creating a second subscription
-    if (profile?.subscription_status === 'active') {
+    if (profile?.subscriptionStatus === 'active') {
       return NextResponse.json(
         { error: 'You already have an active subscription' },
         { status: 400 },
       )
     }
 
-    let customerId = profile?.stripe_customer_id
+    let customerId = profile?.stripeCustomerId ?? null
 
     if (!customerId) {
       const customer = await getStripe().customers.create({
-        email: user.email,
-        metadata: { supabase_user_id: user.id },
+        email: session.user.email,
+        metadata: { user_id: userId },
       })
       customerId = customer.id
 
-      // Use admin client — authenticated users cannot update stripe_customer_id
-      const admin = createAdminClient()
-      const { error: updateError } = await admin
-        .from('profiles')
-        .update({ stripe_customer_id: customerId })
-        .eq('id', user.id)
+      // Persiste o customer id. `returning` confirma o valor gravado.
+      const [updated] = await db
+        .update(profiles)
+        .set({ stripeCustomerId: customerId })
+        .where(eq(profiles.id, userId))
+        .returning({ stripeCustomerId: profiles.stripeCustomerId })
 
-      if (updateError) {
-        console.error('Failed to save stripe_customer_id:', updateError)
-        return NextResponse.json(
-          { error: 'Failed to set up billing. Please try again.' },
-          { status: 500 },
-        )
-      }
-
-      // Re-read to confirm save (guards against race condition with concurrent requests)
-      const { data: updated } = await admin
-        .from('profiles')
-        .select('stripe_customer_id')
-        .eq('id', user.id)
-        .single()
-
-      if (updated?.stripe_customer_id !== customerId) {
-        // Another request won the race — use their customer ID
-        customerId = updated?.stripe_customer_id
+      if (updated?.stripeCustomerId !== customerId) {
+        // Outra request gravou primeiro (race) — usa o customer id vencedor.
+        customerId = updated?.stripeCustomerId ?? null
         if (!customerId) {
           return NextResponse.json(
             { error: 'Failed to set up billing. Please try again.' },
@@ -81,8 +60,7 @@ export async function POST() {
       }
     }
 
-    // Create checkout session
-    const session = await getStripe().checkout.sessions.create({
+    const checkoutSession = await getStripe().checkout.sessions.create({
       customer: customerId,
       mode: 'subscription',
       line_items: [
@@ -95,7 +73,7 @@ export async function POST() {
       cancel_url: `${process.env.NEXT_PUBLIC_APP_URL}/app?checkout=canceled`,
     })
 
-    return NextResponse.json({ url: session.url })
+    return NextResponse.json({ url: checkoutSession.url })
   } catch (error) {
     console.error('Checkout error:', error)
     return NextResponse.json(

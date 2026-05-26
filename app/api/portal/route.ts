@@ -1,38 +1,37 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { eq } from 'drizzle-orm'
+import { getServerSession } from '@/lib/auth'
+import { db } from '@/lib/db'
+import { profiles } from '@/lib/db/schema'
 import { getStripe } from '@/lib/stripe'
 
 export async function POST() {
   try {
-    const supabase = await createClient()
+    const session = await getServerSession()
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-
-    if (!user) {
+    if (!session) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('stripe_customer_id')
-      .eq('id', user.id)
-      .single()
+    const [profile] = await db
+      .select({ stripeCustomerId: profiles.stripeCustomerId })
+      .from(profiles)
+      .where(eq(profiles.id, session.user.id))
+      .limit(1)
 
-    if (!profile?.stripe_customer_id) {
+    if (!profile?.stripeCustomerId) {
       return NextResponse.json(
         { error: 'No billing account found' },
         { status: 400 }
       )
     }
 
-    const session = await getStripe().billingPortal.sessions.create({
-      customer: profile.stripe_customer_id,
+    const portalSession = await getStripe().billingPortal.sessions.create({
+      customer: profile.stripeCustomerId,
       return_url: `${process.env.NEXT_PUBLIC_APP_URL}/app`,
     })
 
-    return NextResponse.json({ url: session.url })
+    return NextResponse.json({ url: portalSession.url })
   } catch (error) {
     console.error('Portal error:', error)
     return NextResponse.json(

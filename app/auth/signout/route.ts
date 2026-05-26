@@ -1,16 +1,13 @@
-import { createClient } from '@/lib/supabase/server'
 import { revalidatePath } from 'next/cache'
+import { headers } from 'next/headers'
 import { type NextRequest, NextResponse } from 'next/server'
+import { auth } from '@/lib/auth'
 
 export async function POST(req: NextRequest) {
-  const supabase = await createClient()
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-
-  if (user) {
-    await supabase.auth.signOut()
+  try {
+    await auth.api.signOut({ headers: await headers() })
+  } catch {
+    // Sessão já inválida/ausente — segue para o redirect mesmo assim.
   }
 
   revalidatePath('/', 'layout')

@@ -1,40 +1,29 @@
 import { NextResponse } from 'next/server'
 import { headers } from 'next/headers'
+import { eq } from 'drizzle-orm'
 import { getStripe } from '@/lib/stripe'
-import { createClient } from '@supabase/supabase-js'
+import { db } from '@/lib/db'
+import { profiles } from '@/lib/db/schema'
 import type Stripe from 'stripe'
 
-// Admin client using service_role key to bypass RLS.
-// Required because webhook updates subscription fields that authenticated users cannot modify.
-function createAdminClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    { auth: { persistSession: false } },
-  )
-}
-
+// Sem RLS no Postgres self-hosted: o webhook escreve direto via Drizzle.
+// A autenticidade vem da verificação da assinatura do Stripe (constructEvent).
 async function updateSubscriptionStatus(
   customerId: string,
   status: string,
   subscriptionId?: string,
 ) {
-  const supabase = createAdminClient()
-
-  const { error, count } = await supabase
-    .from('profiles')
-    .update({
-      subscription_status: status,
-      subscription_id: subscriptionId ?? null,
-      updated_at: new Date().toISOString(),
+  const updated = await db
+    .update(profiles)
+    .set({
+      subscriptionStatus: status,
+      subscriptionId: subscriptionId ?? null,
+      updatedAt: new Date(),
     })
-    .eq('stripe_customer_id', customerId)
+    .where(eq(profiles.stripeCustomerId, customerId))
+    .returning({ id: profiles.id })
 
-  if (error) {
-    throw new Error(`Failed to update subscription status: ${error.message}`)
-  }
-
-  if (count === 0) {
+  if (updated.length === 0) {
     console.warn(`No profile found for stripe_customer_id: ${customerId}`)
   }
 }

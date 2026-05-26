@@ -1,13 +1,22 @@
 import Link from 'next/link'
+import { redirect } from 'next/navigation'
+import { getServerSession } from '@/lib/auth'
 import { login } from './actions'
 import { LoginForm } from './login-form'
 
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string; redirectTo?: string }>
+  searchParams: Promise<{ error?: string; redirectTo?: string; email?: string }>
 }) {
-  const { error, redirectTo } = await searchParams
+  // Valida a sessão no banco (não só o cookie). Cookie órfão → sessão null
+  // → renderiza o login normalmente, sem prender o usuário.
+  const session = await getServerSession()
+  if (session) {
+    redirect('/app')
+  }
+
+  const { error, redirectTo, email } = await searchParams
 
   return (
     <div className="flex min-h-dvh items-center justify-center bg-background px-4">
@@ -25,7 +34,7 @@ export default async function LoginPage({
           </div>
         )}
 
-        <LoginForm action={login} redirectTo={redirectTo} />
+        <LoginForm action={login} redirectTo={redirectTo} email={email} />
 
         <p className="text-center text-sm text-muted-foreground">
           Don&apos;t have an account?{' '}
