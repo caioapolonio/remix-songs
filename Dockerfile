@@ -30,7 +30,9 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json tsconfig.json drizzle.config.ts ./
 COPY lib ./lib
+COPY scripts ./scripts
 # DATABASE_URL é injetado em runtime pelo compose.
+# Default: aplica migrations. Override (one-off): docker compose run --rm migrate bun run scripts/import-supabase-dump.ts
 CMD ["bunx", "drizzle-kit", "migrate"]
 
 # ---------- runner: imagem final mínima rodando o server standalone ----------
