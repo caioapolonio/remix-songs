@@ -459,7 +459,7 @@ Material recomendado para entender melhor cada peça:
 - [x] Fase 4 — Refatorar call-sites do Supabase
 - [x] Fase 5 — Script de import dos dados de produção (4 users migrados, login com senha real validado)
 - [x] Fase 6 — Dockerfile + docker-compose.prod + Caddyfile (validado local: build, migrate, Caddy→Next→Postgres, signup)
-- [ ] Fase 7 — Provisionar a VPS
-- [ ] Fase 8 — Cutover DNS + Stripe
-- [ ] Fase 9 — Backup pg_dump + sync Google Drive + teste de restore
+- [x] Fase 7 — Provisionar a VPS (Docker + clone + .env.production + import 4 users + imagens pré-buildadas; stream-recorder intocado)
+- [x] Fase 8 — Cutover DNS + Stripe (cert TLS LE prod emitido, tráfego real chegando via HTTPS/h2)
+- [x] Fase 9 — Backup pg_dump diário + sync Google Drive + teste de restore (cron ativo)
 - [ ] Fase 10 — Monitoring (`/api/healthz` + healthcheck.io) + rollback docs + SSH hardening
