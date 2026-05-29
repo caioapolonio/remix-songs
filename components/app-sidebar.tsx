@@ -31,7 +31,11 @@ function SidebarContent({
   const { isAuthenticated } = useSubscription()
 
   const handleSignOut = async () => {
-    await fetch('/auth/signout', { method: 'POST' })
+    try {
+      await fetch('/auth/signout', { method: 'POST' })
+    } catch {
+      // Ignora — vamos navegar mesmo assim.
+    }
     window.location.href = '/login'
   }
 
