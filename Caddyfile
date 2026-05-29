@@ -4,3 +4,11 @@
 {$SITE_ADDRESS} {
 	reverse_proxy next:3000
 }
+
+# Redirect canonical: www → apex.
+# Hardcoded porque o nome é específico de produção. Em validação local
+# (SITE_ADDRESS=:80) este bloco existe mas ninguém aponta DNS pra ele;
+# Caddy só loga aviso ao falhar de emitir cert e segue normalmente.
+www.remix-songs.com {
+	redir https://remix-songs.com{uri} permanent
+}
